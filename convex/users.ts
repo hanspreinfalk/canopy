@@ -1,5 +1,39 @@
-import { internalMutation } from "./_generated/server";
+import { internalMutation, mutation, query, MutationCtx, QueryCtx } from "./_generated/server";
 import { v } from "convex/values";
+
+async function getAuthedUser(ctx: QueryCtx | MutationCtx) {
+  const identity = await ctx.auth.getUserIdentity();
+  if (!identity) throw new Error("Unauthorized");
+  const user = await ctx.db
+    .query("users")
+    .withIndex("by_clerk_user_id", (q) => q.eq("clerkUserId", identity.subject))
+    .unique();
+  if (!user) throw new Error("User not found");
+  return user;
+}
+
+export const getSelfSummary = query({
+  args: {},
+  handler: async (ctx) => {
+    const user = await getAuthedUser(ctx);
+    return {
+      selfSummary: user.selfSummary ?? null,
+      selfSummaryUpdatedAt: user.selfSummaryUpdatedAt ?? null,
+    };
+  },
+});
+
+export const updateSelfSummary = mutation({
+  args: { text: v.string() },
+  handler: async (ctx, args) => {
+    const user = await getAuthedUser(ctx);
+    await ctx.db.patch(user._id, {
+      selfSummary: args.text,
+      selfSummaryUpdatedAt: Date.now(),
+    });
+    return null;
+  },
+});
 
 export const upsertFromClerkWebhook = internalMutation({
   args: {

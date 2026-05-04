@@ -12,6 +12,7 @@ import Combine
 class AppDelegate: NSObject, NSApplicationDelegate {
     private var pillWindow: ContentPanel?
     private var onboardingWindow: NSWindow?
+    private var conversationsWindow: NSWindow?
     var hotKey: HotKey?
     var statusItem: NSStatusItem?
     let authViewModel = AuthViewModel()
@@ -55,6 +56,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let menu = NSMenu()
         menu.addItem(withTitle: "Open Canopy", action: #selector(openCanopy), keyEquivalent: "")
         if authViewModel.authState == .authenticated {
+            menu.addItem(withTitle: "Open Main View", action: #selector(openConversations), keyEquivalent: "")
             menu.addItem(withTitle: "Log Out", action: #selector(logOut), keyEquivalent: "")
         }
         menu.addItem(.separator())
@@ -74,6 +76,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let menu = NSMenu()
         menu.addItem(withTitle: "Open Canopy", action: #selector(openCanopy), keyEquivalent: "")
         if authViewModel.authState == .authenticated {
+            menu.addItem(withTitle: "Open Main View", action: #selector(openConversations), keyEquivalent: "")
             menu.addItem(withTitle: "Log Out", action: #selector(logOut), keyEquivalent: "")
         }
         menu.addItem(.separator())
@@ -90,6 +93,31 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         Task {
             try? await Clerk.shared.auth.signOut()
         }
+    }
+
+    @objc private func openConversations() {
+        if conversationsWindow == nil {
+            conversationsWindow = makeConversationsWindow()
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        conversationsWindow?.makeKeyAndOrderFront(nil)
+    }
+
+    private func makeConversationsWindow() -> NSWindow {
+        let window = NSWindow(
+            contentRect: NSRect(origin: .zero, size: CGSize(width: 780, height: 560)),
+            styleMask: [.titled, .closable, .resizable, .miniaturizable, .fullSizeContentView],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "Canopy"
+        window.titlebarAppearsTransparent = true
+        window.titleVisibility = .hidden
+        window.isMovableByWindowBackground = true
+        window.contentView = NSHostingView(rootView: MainView())
+        window.center()
+        window.setFrameAutosaveName("ConversationsWindow")
+        return window
     }
 
     private func setupHotkey() {

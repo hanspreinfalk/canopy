@@ -1,5 +1,5 @@
 import { v } from "convex/values";
-import { mutation, MutationCtx } from "./_generated/server";
+import { mutation, query, MutationCtx, QueryCtx } from "./_generated/server";
 import { Id } from "./_generated/dataModel";
 
 const INACTIVITY_MS = 15 * 60 * 1000; // 15 min
@@ -63,5 +63,59 @@ export const saveMessage = mutation({
         }
 
         return null;
+    },
+});
+
+// ─── Shared auth helper (inline, queries only) ────────────────────────────────
+
+async function getUser(ctx: QueryCtx) {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) throw new Error("Unauthorized");
+    const user = await ctx.db
+        .query("users")
+        .withIndex("by_clerk_user_id", (q) => q.eq("clerkUserId", identity.subject))
+        .unique();
+    if (!user) throw new Error("User not found");
+    return user;
+}
+
+// ─── Queries ──────────────────────────────────────────────────────────────────
+
+export const listConversations = query({
+    args: { numItems: v.number() },
+    handler: async (ctx, args) => {
+        const user = await getUser(ctx);
+        const limit = Math.min(Math.max(1, args.numItems), 100);
+        const rows = await ctx.db
+            .query("conversations")
+            .withIndex("by_user_id", (q) => q.eq("userId", user._id))
+            .order("desc")
+            .take(limit + 1);
+        return {
+            conversations: rows.slice(0, limit),
+            hasMore: rows.length > limit,
+        };
+    },
+});
+
+export const listMessages = query({
+    args: {
+        conversationId: v.id("conversations"),
+        numItems: v.number(),
+    },
+    handler: async (ctx, args) => {
+        const user = await getUser(ctx);
+        const conversation = await ctx.db.get(args.conversationId);
+        if (!conversation || conversation.userId !== user._id) throw new Error("Not found");
+        const limit = Math.min(Math.max(1, args.numItems), 200);
+        const rows = await ctx.db
+            .query("messages")
+            .withIndex("by_conversation_id", (q) => q.eq("conversationId", args.conversationId))
+            .order("asc")
+            .take(limit + 1);
+        return {
+            messages: rows.slice(0, limit),
+            hasMore: rows.length > limit,
+        };
     },
 });
