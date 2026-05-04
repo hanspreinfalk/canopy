@@ -9,7 +9,7 @@ import AppKit
 import SwiftUI
 
 class ContentPanel: NSPanel {
-    
+
     init() {
         super.init(
             contentRect: .zero,
@@ -17,11 +17,13 @@ class ContentPanel: NSPanel {
             backing: .buffered,
             defer: true
         )
-        
+
         setupWindow()
         setupContentView()
     }
-    
+
+    override var canBecomeKey: Bool { true }
+
     private func setupWindow() {
         backgroundColor = .clear
         isOpaque = false
@@ -30,13 +32,13 @@ class ContentPanel: NSPanel {
         isMovableByWindowBackground = true
         titlebarAppearsTransparent = true
         titleVisibility = .hidden
-        
+
         collectionBehavior = [
             .canJoinAllSpaces,
             .stationary
         ]
     }
-    
+
     private func setupContentView() {
         let contentView = ContentView() {
             self.close()
