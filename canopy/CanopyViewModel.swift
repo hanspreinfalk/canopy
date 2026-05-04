@@ -3,40 +3,82 @@
 //  canopy
 //
 
-import Foundation
+import AVFoundation
 import Combine
+import Foundation
+import Speech
 
 @MainActor
 final class CanopyViewModel: ObservableObject {
+    // MARK: - Published state
+
     @Published var isEditing = false
     @Published var isSending = false
+    @Published var isRecording = false
     @Published var inputText = ""
     @Published var geminiResponse = ""
+    @Published var liveTranscript = ""
+
+    // MARK: - Private dependencies
 
     private let geminiAPI = GeminiAPI(proxyBaseURL: "https://oceanic-opossum-563.convex.site")
     private let ttsClient = ElevenLabsTTSClient(proxyURL: "https://oceanic-opossum-563.convex.site/tts")
-    private var sendTask: Task<Void, Never>?
+    private let transcriptionProvider: any CustomTranscriptionProvider
+    private let audioEngine = AudioCaptureEngine()
+    private let fnKeyMonitor = FnKeyMonitor()
 
-    func startEditing() {
-        isEditing = true
+    private var sendTask: Task<Void, Never>?
+    private var activeSession: (any CustomStreamingTranscriptionSession)?
+    private var transcriptFallbackTask: Task<Void, Never>?
+    private var transcriptDelivered = false
+
+    // MARK: - Init
+
+    init() {
+        transcriptionProvider = CustomTranscriptionProviderFactory.makeDefaultProvider()
+        setupFnKeyMonitor()
     }
+
+    // MARK: - fn key monitoring
+
+    private func setupFnKeyMonitor() {
+        fnKeyMonitor.onFnDown = { [weak self] in
+            Task { @MainActor [weak self] in await self?.startRecording() }
+        }
+        fnKeyMonitor.onFnUp = { [weak self] in
+            Task { @MainActor [weak self] in self?.stopRecording() }
+        }
+        fnKeyMonitor.start()
+    }
+
+    // MARK: - Text input
+
+    func startEditing() { isEditing = true }
 
     func stopEditing() {
         isEditing = false
         inputText = ""
     }
 
-    func sendMessage() {
-        let text = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
-        stopEditing()
-        guard !text.isEmpty else { return }
+    // MARK: - Send to Gemini + TTS
+
+    /// Sends `text` (or `inputText` if nil) through Gemini then ElevenLabs.
+    func sendMessage(text overrideText: String? = nil) {
+        let messageText: String
+        if let overrideText {
+            messageText = overrideText
+        } else {
+            messageText = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
+            stopEditing()
+        }
+        guard !messageText.isEmpty else { return }
 
         isSending = true
         geminiResponse = ""
 
         sendTask = Task {
             do {
-                let fullText = try await geminiAPI.sendMessage(text) { [weak self] chunk in
+                let fullText = try await geminiAPI.sendMessage(messageText) { [weak self] chunk in
                     self?.geminiResponse = chunk
                 }
                 isSending = false
@@ -57,5 +99,107 @@ final class CanopyViewModel: ObservableObject {
         isSending = false
         geminiResponse = ""
         ttsClient.stopPlayback()
+    }
+
+    // MARK: - Recording
+
+    func startRecording() async {
+        guard !isRecording && !isSending else { return }
+
+        guard await requestMicrophonePermission() else {
+            print("❌ Microphone permission denied")
+            return
+        }
+
+        if transcriptionProvider.requiresSpeechRecognitionPermission {
+            guard await requestSpeechPermission() else {
+                print("❌ Speech recognition permission denied")
+                return
+            }
+        }
+
+        isRecording = true
+        liveTranscript = ""
+        transcriptDelivered = false
+
+        do {
+            let session = try await transcriptionProvider.startStreamingSession(
+                keyterms: [],
+                onTranscriptUpdate: { [weak self] text in
+                    Task { @MainActor [weak self] in self?.liveTranscript = text }
+                },
+                onFinalTranscriptReady: { [weak self] text in
+                    Task { @MainActor [weak self] in self?.handleFinalTranscript(text) }
+                },
+                onError: { error in
+                    print("❌ Transcription session error: \(error)")
+                }
+            )
+
+            // fn may have been released while we were starting up
+            guard isRecording else {
+                session.cancel()
+                return
+            }
+
+            activeSession = session
+
+            try audioEngine.start { buffer in
+                session.appendAudioBuffer(buffer)
+            }
+        } catch {
+            print("❌ Failed to start recording: \(error)")
+            isRecording = false
+        }
+    }
+
+    func stopRecording() {
+        guard isRecording else { return }
+
+        audioEngine.stop()
+        isRecording = false
+
+        let session = activeSession
+        let fallbackDelay = session?.finalTranscriptFallbackDelaySeconds ?? 2.5
+
+        session?.requestFinalTranscript()
+
+        let capturedTranscript = liveTranscript
+        transcriptFallbackTask = Task {
+            try? await Task.sleep(for: .seconds(fallbackDelay))
+            guard !Task.isCancelled else { return }
+            self.handleFinalTranscript(capturedTranscript)
+        }
+    }
+
+    private func handleFinalTranscript(_ text: String) {
+        guard !transcriptDelivered else { return }
+        transcriptDelivered = true
+
+        transcriptFallbackTask?.cancel()
+        transcriptFallbackTask = nil
+        activeSession = nil
+        liveTranscript = ""
+
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+
+        sendMessage(text: trimmed)
+    }
+
+    // MARK: - Permission helpers
+
+    private func requestMicrophonePermission() async -> Bool {
+        await withCheckedContinuation { continuation in
+            AVCaptureDevice.requestAccess(for: .audio) { continuation.resume(returning: $0) }
+        }
+    }
+
+    private func requestSpeechPermission() async -> Bool {
+        await withCheckedContinuation { continuation in
+            SFSpeechRecognizer.requestAuthorization { status in
+                continuation.resume(returning: status == .authorized)
+            }
+        }
     }
 }

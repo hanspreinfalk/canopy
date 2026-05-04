@@ -33,11 +33,13 @@ struct ContentView: View {
         } catch {}
     }
 
+    private var isActive: Bool { isHovered || vm.isEditing || vm.isSending || vm.isRecording }
+
     var body: some View {
         ZStack(alignment: .bottom) {
             Color.clear.frame(maxWidth: .infinity, maxHeight: .infinity)
             VStack(alignment: .center, spacing: 8) {
-                if isHovered && !vm.isEditing && !vm.isSending {
+                if isHovered && !vm.isEditing && !vm.isSending && !vm.isRecording {
                     hintPill
                         .transition(.asymmetric(
                             insertion: .opacity.animation(.easeIn(duration: 0.15).delay(0.2)),
@@ -46,7 +48,7 @@ struct ContentView: View {
                 }
                 HStack(alignment: .bottom, spacing: 8) {
                     mainPill
-                    if isHovered || vm.isEditing || vm.isSending {
+                    if isActive {
                         actionButton
                             .transition(.asymmetric(
                                 insertion: .opacity.animation(.easeIn(duration: 0.15).delay(0.2)),
@@ -55,14 +57,15 @@ struct ContentView: View {
                     }
                 }
             }
-            .offset(x: (isHovered || vm.isEditing || vm.isSending) ? 20 : 0)
+            .offset(x: isActive ? 20 : 0)
             .onHover { h in
-                if !vm.isEditing && !vm.isSending { isHovered = h }
+                if !vm.isEditing && !vm.isSending && !vm.isRecording { isHovered = h }
             }
         }
         .animation(.easeInOut(duration: 0.3), value: isHovered)
         .animation(.easeInOut(duration: 0.2), value: vm.isEditing)
         .animation(.easeInOut(duration: 0.2), value: vm.isSending)
+        .animation(.easeInOut(duration: 0.15), value: vm.isRecording)
     }
 
     private var mainPill: some View {
@@ -76,6 +79,21 @@ struct ContentView: View {
                     .onSubmit { submitMessage() }
                     .onKeyPress(.escape) { vm.stopEditing(); return .handled }
                     .padding(.horizontal, 10)
+
+            } else if vm.isRecording {
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(Color.red)
+                        .frame(width: 6, height: 6)
+                    Text(vm.liveTranscript.isEmpty ? "Listening..." : vm.liveTranscript)
+                        .foregroundColor(.white.opacity(0.9))
+                        .font(.system(size: 12))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+                .padding(.horizontal, 10)
+                .transition(.opacity.animation(.easeIn(duration: 0.1)))
+
             } else if vm.isSending {
                 Text(vm.geminiResponse.isEmpty ? "..." : vm.geminiResponse)
                     .foregroundColor(.white.opacity(0.85))
@@ -84,6 +102,7 @@ struct ContentView: View {
                     .truncationMode(.tail)
                     .padding(.horizontal, 10)
                     .transition(.opacity.animation(.easeIn(duration: 0.15)))
+
             } else if isHovered {
                 Text("· · · · · · · · · ·")
                     .foregroundColor(.white.opacity(0.5))
@@ -92,11 +111,11 @@ struct ContentView: View {
             }
         }
         .frame(
-            width: (vm.isEditing || vm.isSending) ? 200 : (isHovered ? 80 : PillConstants.width),
-            height: (isHovered || vm.isEditing || vm.isSending) ? 28 : PillConstants.height
+            width: (vm.isEditing || vm.isSending || vm.isRecording) ? 200 : (isHovered ? 80 : PillConstants.width),
+            height: isActive ? 28 : PillConstants.height
         )
         .background(Color(red: 0.15, green: 0.15, blue: 0.15))
-        .clipShape(RoundedRectangle(cornerRadius: (isHovered || vm.isEditing || vm.isSending) ? 14 : PillConstants.cornerRadius))
+        .clipShape(RoundedRectangle(cornerRadius: isActive ? 14 : PillConstants.cornerRadius))
     }
 
     private var hintPill: some View {
@@ -115,27 +134,30 @@ struct ContentView: View {
 
     private var actionButton: some View {
         Button {
-            if vm.isSending {
+            if vm.isRecording {
+                // fn-up stops recording; button is just visual during recording
+            } else if vm.isSending {
                 vm.cancel()
                 isHovered = false
             } else if vm.isEditing {
                 let hasText = !vm.inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                if hasText {
-                    submitMessage()
-                } else {
-                    vm.stopEditing()
-                }
+                if hasText { submitMessage() } else { vm.stopEditing() }
             } else {
                 startEditing()
             }
         } label: {
-            let icon = vm.isSending ? "xmark" :
-                       (vm.isEditing && !vm.inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                           ? "arrow.up.circle.fill"
-                           : (vm.isEditing ? "xmark" : "pencil")
-            Image(systemName: icon)
-                .foregroundColor(.white)
-                .font(.system(size: 12))
+            if vm.isRecording {
+                Image(systemName: "mic.fill")
+                    .foregroundColor(.red)
+                    .font(.system(size: 12))
+            } else {
+                let icon = vm.isSending ? "xmark" :
+                    (vm.isEditing && !vm.inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        ? "arrow.up.circle.fill" : (vm.isEditing ? "xmark" : "pencil")
+                Image(systemName: icon)
+                    .foregroundColor(.white)
+                    .font(.system(size: 12))
+            }
         }
         .buttonStyle(.plain)
         .frame(width: 28, height: 28)
