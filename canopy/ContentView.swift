@@ -110,7 +110,7 @@ struct ContentView: View {
 
     private var hintPill: some View {
         HStack(spacing: 0) {
-            Text("Click or hold ")
+            Text("Click & hold ")
             Text("fn").foregroundColor(.pink).fontWeight(.semibold)
             Text(" to start dictating")
         }
