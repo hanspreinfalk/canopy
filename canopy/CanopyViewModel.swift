@@ -5,6 +5,7 @@
 
 import AVFoundation
 import Combine
+import ConvexMobile
 import Foundation
 import Speech
 
@@ -89,9 +90,28 @@ final class CanopyViewModel: ObservableObject {
 
         sendTask = Task {
             do {
+                Task {
+                    do {
+                        let args: [String: ConvexEncodable?] = ["role": "user", "content": messageText]
+                        try await convex.mutation("conversations:saveMessage", with: args)
+                    } catch {
+                        print("❌ saveMessage(user) failed: \(error)")
+                    }
+                }
+
                 let fullText = try await geminiAPI.sendMessage(messageText) { [weak self] chunk in
                     self?.geminiResponse = chunk
                 }
+
+                Task {
+                    do {
+                        let args: [String: ConvexEncodable?] = ["role": "assistant", "content": fullText]
+                        try await convex.mutation("conversations:saveMessage", with: args)
+                    } catch {
+                        print("❌ saveMessage(assistant) failed: \(error)")
+                    }
+                }
+
                 isSpeaking = true
                 try await ttsClient.speakText(fullText)
             } catch is CancellationError {

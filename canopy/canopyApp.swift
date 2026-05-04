@@ -5,13 +5,15 @@
 
 import SwiftUI
 import ClerkKit
-import ClerkConvex
 import ConvexMobile
+
+@MainActor
+private let _convexAuthProvider = CanopyAuthProvider()
 
 @MainActor
 let convex = ConvexClientWithAuth(
     deploymentUrl: "https://oceanic-opossum-563.convex.cloud",
-    authProvider: ClerkConvexAuthProvider()
+    authProvider: _convexAuthProvider as any AuthProvider<String>
 )
 
 @main
@@ -29,6 +31,9 @@ struct canopyApp: App {
                 )
             )
         )
+        Task { @MainActor in
+            _convexAuthProvider.bind(to: convex)
+        }
     }
 
     var body: some Scene {
