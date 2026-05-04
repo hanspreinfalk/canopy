@@ -30,7 +30,10 @@ export const upsertFromClerkWebhook = internalMutation({
       email: args.email,
       fullName: args.fullName,
       profileImageUrl: args.profileImageUrl,
-      credits: 100,
+      memoryEnabled: true,
+      plan: "free",
+      creditsBalance: 100,
+      lastActiveAt: Date.now(),
     });
   },
 });
