@@ -1,82 +1,70 @@
+//
+//  ContentView.swift
+//  canopy
+//
+//  Created by Hans Preinfalk on 5/3/26.
+//
+
 import SwiftUI
-import AppKit
 
 struct ContentView: View {
-    @EnvironmentObject var dictation: FnDictationManager
     @State private var isHovered = false
-
-    private var showBadge: Bool { isHovered || !dictation.statusText.isEmpty }
+    var dismiss: () -> ()
 
     var body: some View {
         VStack(spacing: 8) {
-            if showBadge {
-                HStack(spacing: 8) {
-                    if dictation.isRecording {
-                        Image(systemName: "mic.fill")
-                            .foregroundStyle(.red)
-                    } else if !dictation.statusText.isEmpty {
-                        Image(systemName: "waveform")
-                            .foregroundStyle(.white)
-                    } else {
-                        Image(systemName: "wand.and.rays")
-                            .foregroundStyle(.white)
-                    }
-                    Text(dictation.statusText.isEmpty
-                         ? "Click or hold **fn** to start dictating"
-                         : dictation.statusText)
-                        .foregroundStyle(.white)
-                        .font(.system(size: 14, weight: .medium))
-                }
-                .padding(.horizontal, 24)
-                .padding(.vertical, 12)
-                .background(.black, in: Capsule())
-                .transition(.opacity.combined(with: .move(edge: .bottom)))
+            mainPill
+            if isHovered {
+                controls
+                    .transition(.opacity)
             }
-
-            HStack(spacing: 4) {
-                ForEach(0..<7, id: \.self) { _ in
-                    Circle()
-                        .fill(dictation.isRecording ? Color.red : Color.white.opacity(0.6))
-                        .frame(width: 4, height: 4)
-                }
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 12)
-            .background(.black, in: Capsule())
         }
-        .animation(.spring(duration: 0.3), value: isHovered)
-        .animation(.spring(duration: 0.2), value: dictation.isRecording)
-        .animation(.spring(duration: 0.2), value: dictation.statusText)
-        .onHover { hovering in isHovered = hovering }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
-        .padding(.bottom, 16)
-        .onAppear { setupWindow() }
+        .contentShape(Rectangle())
+        .onHover { isHovered = $0 }
+        .animation(.spring(duration: 0.25), value: isHovered)
     }
 
-    func setupWindow() {
-        guard let window = NSApplication.shared.windows.first else { return }
+    private var mainPill: some View {
+        HStack(spacing: 0) {
+            Text("Click or hold ")
+            Text("fn").foregroundColor(.pink).fontWeight(.semibold)
+            Text(" to start dictating")
+        }
+        .foregroundColor(.white)
+        .font(.system(size: 15, weight: .medium))
+        .opacity(isHovered ? 1 : 0)
+        .frame(
+            width: isHovered ? 340 : PillConstants.width,
+            height: isHovered ? 52 : PillConstants.height
+        )
+        .background(Color(red: 0.1, green: 0.1, blue: 0.1))
+        .clipShape(RoundedRectangle(cornerRadius: isHovered ? 26 : PillConstants.cornerRadius))
+    }
 
-        window.styleMask = [.borderless, .fullSizeContentView]
-        window.isOpaque = false
-        window.backgroundColor = .clear
-        window.level = .floating
-        window.hasShadow = false
-        window.ignoresMouseEvents = false
-        window.collectionBehavior = [.canJoinAllSpaces, .stationary]
+    private var controls: some View {
+        HStack(spacing: 8) {
+            Text("· · · · · · · · · ·")
+                .foregroundColor(Color.white.opacity(0.5))
+                .font(.system(size: 11))
+                .padding(.horizontal, 20)
+                .padding(.vertical, 10)
+                .background(Color(red: 0.15, green: 0.15, blue: 0.15))
+                .clipShape(Capsule())
 
-        let mouseLocation = NSEvent.mouseLocation
-        let screen = NSScreen.screens.first(where: { NSMouseInRect(mouseLocation, $0.frame, false) }) ?? NSScreen.main
-        if let screen {
-            let frame = screen.frame
-            window.setFrame(
-                CGRect(x: frame.minX, y: frame.minY, width: frame.width, height: 120),
-                display: true
-            )
+            Button { } label: {
+                Image(systemName: "wand.and.rays")
+                    .foregroundColor(.white)
+                    .font(.system(size: 14))
+            }
+            .buttonStyle(.plain)
+            .frame(width: 38, height: 38)
+            .background(Color(red: 0.15, green: 0.15, blue: 0.15))
+            .clipShape(Circle())
         }
     }
 }
 
 #Preview {
-    ContentView()
-        .environmentObject(FnDictationManager())
+    ContentView() {}
 }

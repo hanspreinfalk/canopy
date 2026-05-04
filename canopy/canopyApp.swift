@@ -1,15 +1,19 @@
+//
+//  canopyApp.swift
+//  canopy
+//
+//  Created by Hans Preinfalk on 5/3/26.
+//
+
 import SwiftUI
 
 @main
 struct canopyApp: App {
-    @StateObject private var dictation = FnDictationManager()
-
+    @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
+    
     var body: some Scene {
-        WindowGroup {
-            ContentView()
-                .environmentObject(dictation)
+        Settings {
+            EmptyView()
         }
-        .windowStyle(.plain)
-        .windowResizability(.contentSize)
     }
 }

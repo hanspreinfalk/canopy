@@ -6,6 +6,10 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		217C51D62FA827EF00936123 /* HotKey in Frameworks */ = {isa = PBXBuildFile; productRef = 217C51D52FA827EF00936123 /* HotKey */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXFileReference section */
 		217C51812FA8106300936123 /* canopy.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = canopy.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -23,6 +27,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				217C51D62FA827EF00936123 /* HotKey in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -65,6 +70,7 @@
 			);
 			name = canopy;
 			packageProductDependencies = (
+				217C51D52FA827EF00936123 /* HotKey */,
 			);
 			productName = canopy;
 			productReference = 217C51812FA8106300936123 /* canopy.app */;
@@ -94,6 +100,9 @@
 			);
 			mainGroup = 217C51782FA8106300936123;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				217C51D42FA827EF00936123 /* XCRemoteSwiftPackageReference "HotKey" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 217C51822FA8106300936123 /* Products */;
 			projectDirPath = "";
@@ -251,7 +260,6 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "-";
-				CODE_SIGN_ENTITLEMENTS = canopy/canopy.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
@@ -262,8 +270,6 @@
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
-				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Used for fn-key voice dictation";
-				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Used for fn-key voice dictation";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
@@ -287,7 +293,6 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "-";
-				CODE_SIGN_ENTITLEMENTS = canopy/canopy.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
@@ -298,8 +303,6 @@
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
-				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Used for fn-key voice dictation";
-				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Used for fn-key voice dictation";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
@@ -339,6 +342,25 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		217C51D42FA827EF00936123 /* XCRemoteSwiftPackageReference "HotKey" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/soffes/HotKey";
+			requirement = {
+				branch = main;
+				kind = branch;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		217C51D52FA827EF00936123 /* HotKey */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 217C51D42FA827EF00936123 /* XCRemoteSwiftPackageReference "HotKey" */;
+			productName = HotKey;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 217C51792FA8106300936123 /* Project object */;
 }
