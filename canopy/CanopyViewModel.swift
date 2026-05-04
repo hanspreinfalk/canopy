@@ -18,6 +18,7 @@ final class CanopyViewModel: ObservableObject {
     @Published var inputText = ""
     @Published var geminiResponse = ""
     @Published var liveTranscript = ""
+    @Published var audioPowerLevel: CGFloat = 0.0
 
     // MARK: - Private dependencies
 
@@ -43,7 +44,14 @@ final class CanopyViewModel: ObservableObject {
 
     private func setupFnKeyMonitor() {
         fnKeyMonitor.onFnDown = { [weak self] in
-            Task { @MainActor [weak self] in await self?.startRecording() }
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                if self.isSending {
+                    self.cancel()
+                } else {
+                    await self.startRecording()
+                }
+            }
         }
         fnKeyMonitor.onFnUp = { [weak self] in
             Task { @MainActor [weak self] in self?.stopRecording() }
@@ -81,14 +89,14 @@ final class CanopyViewModel: ObservableObject {
                 let fullText = try await geminiAPI.sendMessage(messageText) { [weak self] chunk in
                     self?.geminiResponse = chunk
                 }
-                isSending = false
+                // Keep isSending = true while TTS plays so fn/hover can still cancel
                 try await ttsClient.speakText(fullText)
             } catch is CancellationError {
-                isSending = false
+                // cancelled mid-Gemini or mid-TTS
             } catch {
                 print("❌ CanopyViewModel error: \(error)")
-                isSending = false
             }
+            isSending = false
             geminiResponse = ""
         }
     }
@@ -144,9 +152,12 @@ final class CanopyViewModel: ObservableObject {
 
             activeSession = session
 
-            try audioEngine.start { buffer in
-                session.appendAudioBuffer(buffer)
-            }
+            try audioEngine.start(
+                onBuffer: { buffer in session.appendAudioBuffer(buffer) },
+                onPowerLevel: { [weak self] power in
+                    Task { @MainActor [weak self] in self?.audioPowerLevel = power }
+                }
+            )
         } catch {
             print("❌ Failed to start recording: \(error)")
             isRecording = false
@@ -158,6 +169,7 @@ final class CanopyViewModel: ObservableObject {
 
         audioEngine.stop()
         isRecording = false
+        audioPowerLevel = 0.0
 
         let session = activeSession
         let fallbackDelay = session?.finalTranscriptFallbackDelaySeconds ?? 2.5

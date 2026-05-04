@@ -11,13 +11,13 @@ import HotKey
 class AppDelegate: NSObject, NSApplicationDelegate {
     var contentWindow: NSWindow?
     var hotKey: HotKey?
-    
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
-        
+        showContentWindow()
         setupHotkey()
     }
-    
+
     private func setupHotkey() {
         hotKey = HotKey(key: .a, modifiers: [.command, .shift])
         hotKey?.keyDownHandler = { [weak self] in
