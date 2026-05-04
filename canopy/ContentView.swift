@@ -7,12 +7,9 @@
 
 import SwiftUI
 import AppKit
-
-// convex test
 import Combine
 import ConvexMobile
 
-// convex test
 struct TaskItem: Hashable, Decodable {
     let _id: String
     let isCompleted: Bool
@@ -21,11 +18,10 @@ struct TaskItem: Hashable, Decodable {
 
 struct ContentView: View {
     @State private var isHovered = false
-    @State private var isEditing = false
-    @State private var inputText = ""
     @FocusState private var isFocused: Bool
+    @StateObject private var vm = CanopyViewModel()
     var dismiss: () -> ()
-    
+
     // convex test
     @State private var tasks: [TaskItem] = []
     let client = ConvexClient(deploymentUrl: "https://oceanic-opossum-563.convex.cloud")
@@ -34,16 +30,14 @@ struct ContentView: View {
             for try await tasks: [TaskItem] in client.subscribe(to: "tasks:get").values {
                 self.tasks = tasks
             }
-        } catch {
-            // handle error
-        }
+        } catch {}
     }
 
     var body: some View {
         ZStack(alignment: .bottom) {
             Color.clear.frame(maxWidth: .infinity, maxHeight: .infinity)
             VStack(alignment: .center, spacing: 8) {
-                if isHovered && !isEditing {
+                if isHovered && !vm.isEditing && !vm.isSending {
                     hintPill
                         .transition(.asymmetric(
                             insertion: .opacity.animation(.easeIn(duration: 0.15).delay(0.2)),
@@ -52,7 +46,7 @@ struct ContentView: View {
                 }
                 HStack(alignment: .bottom, spacing: 8) {
                     mainPill
-                    if isHovered {
+                    if isHovered || vm.isEditing || vm.isSending {
                         actionButton
                             .transition(.asymmetric(
                                 insertion: .opacity.animation(.easeIn(duration: 0.15).delay(0.2)),
@@ -61,26 +55,35 @@ struct ContentView: View {
                     }
                 }
             }
-            .offset(x: isHovered ? 20 : 0)
+            .offset(x: (isHovered || vm.isEditing || vm.isSending) ? 20 : 0)
             .onHover { h in
-                if !isEditing { isHovered = h }
+                if !vm.isEditing && !vm.isSending { isHovered = h }
             }
         }
         .animation(.easeInOut(duration: 0.3), value: isHovered)
-        .animation(.easeInOut(duration: 0.2), value: isEditing)
+        .animation(.easeInOut(duration: 0.2), value: vm.isEditing)
+        .animation(.easeInOut(duration: 0.2), value: vm.isSending)
     }
 
     private var mainPill: some View {
         ZStack {
-            if isEditing {
-                TextField("", text: $inputText)
+            if vm.isEditing {
+                TextField("", text: $vm.inputText)
                     .textFieldStyle(.plain)
                     .foregroundColor(.white)
                     .font(.system(size: 12))
                     .focused($isFocused)
-                    .onSubmit { stopEditing() }
-                    .onKeyPress(.escape) { stopEditing(); return .handled }
+                    .onSubmit { submitMessage() }
+                    .onKeyPress(.escape) { vm.stopEditing(); return .handled }
                     .padding(.horizontal, 10)
+            } else if vm.isSending {
+                Text(vm.geminiResponse.isEmpty ? "..." : vm.geminiResponse)
+                    .foregroundColor(.white.opacity(0.85))
+                    .font(.system(size: 12))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .padding(.horizontal, 10)
+                    .transition(.opacity.animation(.easeIn(duration: 0.15)))
             } else if isHovered {
                 Text("· · · · · · · · · ·")
                     .foregroundColor(.white.opacity(0.5))
@@ -89,11 +92,11 @@ struct ContentView: View {
             }
         }
         .frame(
-            width: isEditing ? 200 : (isHovered ? 80 : PillConstants.width),
-            height: (isHovered || isEditing) ? 28 : PillConstants.height
+            width: (vm.isEditing || vm.isSending) ? 200 : (isHovered ? 80 : PillConstants.width),
+            height: (isHovered || vm.isEditing || vm.isSending) ? 28 : PillConstants.height
         )
         .background(Color(red: 0.15, green: 0.15, blue: 0.15))
-        .clipShape(RoundedRectangle(cornerRadius: (isHovered || isEditing) ? 14 : PillConstants.cornerRadius))
+        .clipShape(RoundedRectangle(cornerRadius: (isHovered || vm.isEditing || vm.isSending) ? 14 : PillConstants.cornerRadius))
     }
 
     private var hintPill: some View {
@@ -112,13 +115,25 @@ struct ContentView: View {
 
     private var actionButton: some View {
         Button {
-            if isEditing {
-                stopEditing()
+            if vm.isSending {
+                vm.cancel()
+                isHovered = false
+            } else if vm.isEditing {
+                let hasText = !vm.inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                if hasText {
+                    submitMessage()
+                } else {
+                    vm.stopEditing()
+                }
             } else {
                 startEditing()
             }
         } label: {
-            Image(systemName: isEditing ? "xmark" : "wand.and.rays")
+            let icon = vm.isSending ? "xmark" :
+                       (vm.isEditing && !vm.inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                           ? "arrow.up.circle.fill"
+                           : (vm.isEditing ? "xmark" : "pencil")
+            Image(systemName: icon)
                 .foregroundColor(.white)
                 .font(.system(size: 12))
         }
@@ -129,7 +144,7 @@ struct ContentView: View {
     }
 
     private func startEditing() {
-        isEditing = true
+        vm.startEditing()
         NSApp.activate(ignoringOtherApps: true)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
             NSApp.windows.first?.makeKey()
@@ -137,10 +152,9 @@ struct ContentView: View {
         }
     }
 
-    private func stopEditing() {
-        isEditing = false
-        inputText = ""
+    private func submitMessage() {
         isFocused = false
+        vm.sendMessage()
     }
 }
 
