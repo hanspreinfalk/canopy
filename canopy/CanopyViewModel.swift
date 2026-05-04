@@ -19,6 +19,8 @@ final class CanopyViewModel: ObservableObject {
     @Published var geminiResponse = ""
     @Published var liveTranscript = ""
     @Published var audioPowerLevel: CGFloat = 0.0
+    @Published var isSpeaking = false
+    @Published var ttsPowerLevel: CGFloat = 0.0
 
     // MARK: - Private dependencies
 
@@ -38,6 +40,7 @@ final class CanopyViewModel: ObservableObject {
     init() {
         transcriptionProvider = CustomTranscriptionProviderFactory.makeDefaultProvider()
         setupFnKeyMonitor()
+        ttsClient.onPowerLevel = { [weak self] power in self?.ttsPowerLevel = power }
     }
 
     // MARK: - fn key monitoring
@@ -89,7 +92,7 @@ final class CanopyViewModel: ObservableObject {
                 let fullText = try await geminiAPI.sendMessage(messageText) { [weak self] chunk in
                     self?.geminiResponse = chunk
                 }
-                // Keep isSending = true while TTS plays so fn/hover can still cancel
+                isSpeaking = true
                 try await ttsClient.speakText(fullText)
             } catch is CancellationError {
                 // cancelled mid-Gemini or mid-TTS
@@ -97,6 +100,8 @@ final class CanopyViewModel: ObservableObject {
                 print("❌ CanopyViewModel error: \(error)")
             }
             isSending = false
+            isSpeaking = false
+            ttsPowerLevel = 0
             geminiResponse = ""
         }
     }
@@ -105,6 +110,8 @@ final class CanopyViewModel: ObservableObject {
         sendTask?.cancel()
         sendTask = nil
         isSending = false
+        isSpeaking = false
+        ttsPowerLevel = 0
         geminiResponse = ""
         ttsClient.stopPlayback()
     }

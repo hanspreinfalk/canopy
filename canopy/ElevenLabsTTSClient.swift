@@ -15,6 +15,9 @@ final class ElevenLabsTTSClient: NSObject {
     private var audioPlayer: AVAudioPlayer?
     private var playerContinuation: CheckedContinuation<Void, Never>?
 
+    /// Called on MainActor with normalized power 0…1 while TTS is playing.
+    var onPowerLevel: ((CGFloat) -> Void)?
+
     init(proxyURL: String) {
         self.proxyURL = URL(string: proxyURL)!
         let configuration = URLSessionConfiguration.default
@@ -23,8 +26,8 @@ final class ElevenLabsTTSClient: NSObject {
         self.session = URLSession(configuration: configuration)
     }
 
-    /// Fetches audio from ElevenLabs and plays it, **awaiting until playback finishes**.
-    /// Call `stopPlayback()` or cancel the enclosing Task to interrupt early.
+    /// Fetches audio from ElevenLabs, plays it, and awaits until playback finishes.
+    /// Fires `onPowerLevel` at ~30 fps while speaking so callers can drive a waveform.
     func speakText(_ text: String) async throws {
         var request = URLRequest(url: proxyURL)
         request.httpMethod = "POST"
@@ -34,10 +37,7 @@ final class ElevenLabsTTSClient: NSObject {
         let body: [String: Any] = [
             "text": text,
             "model_id": "eleven_flash_v2_5",
-            "voice_settings": [
-                "stability": 0.5,
-                "similarity_boost": 0.75
-            ]
+            "voice_settings": ["stability": 0.5, "similarity_boost": 0.75]
         ]
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
@@ -56,12 +56,25 @@ final class ElevenLabsTTSClient: NSObject {
         try Task.checkCancellation()
 
         let player = try AVAudioPlayer(data: data)
+        player.isMeteringEnabled = true
         player.delegate = self
         self.audioPlayer = player
         player.play()
         print("🔊 ElevenLabs TTS: playing \(data.count / 1024)KB audio")
 
-        // Suspend until the delegate fires (playback done) or stopPlayback() is called
+        // Poll the meter at ~30 fps until playback ends
+        Task { @MainActor [weak self] in
+            while self?.audioPlayer?.isPlaying == true {
+                self?.audioPlayer?.updateMeters()
+                let db = self?.audioPlayer?.averagePower(forChannel: 0) ?? -160
+                let linear = pow(10.0, Double(db) / 20.0)
+                self?.onPowerLevel?(CGFloat(min(linear * 6, 1.0)))
+                try? await Task.sleep(nanoseconds: 33_000_000)
+            }
+            self?.onPowerLevel?(0)
+        }
+
+        // Suspend until delegate or stopPlayback() resumes us
         await withCheckedContinuation { continuation in
             self.playerContinuation = continuation
         }
@@ -73,6 +86,7 @@ final class ElevenLabsTTSClient: NSObject {
     func stopPlayback() {
         audioPlayer?.stop()
         audioPlayer = nil
+        onPowerLevel?(0)
         playerContinuation?.resume()
         playerContinuation = nil
     }
@@ -82,6 +96,7 @@ extension ElevenLabsTTSClient: AVAudioPlayerDelegate {
     nonisolated func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
         Task { @MainActor [weak self] in
             self?.audioPlayer = nil
+            self?.onPowerLevel?(0)
             self?.playerContinuation?.resume()
             self?.playerContinuation = nil
         }

@@ -33,7 +33,7 @@ struct ContentView: View {
         } catch {}
     }
 
-    private var isActive: Bool { isHovered || vm.isEditing || vm.isRecording }
+    private var isActive: Bool { isHovered || vm.isEditing || vm.isRecording || vm.isSpeaking }
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -84,13 +84,17 @@ struct ContentView: View {
                 WaveformView(audioPowerLevel: vm.audioPowerLevel)
                     .transition(.opacity.animation(.easeIn(duration: 0.1)))
 
+            } else if vm.isSpeaking {
+                WaveformView(audioPowerLevel: vm.ttsPowerLevel)
+                    .transition(.opacity.animation(.easeIn(duration: 0.15)))
+
             } else if isHovered {
                 WaveformView(audioPowerLevel: 0.0, color: .white.opacity(0.45))
                     .transition(.opacity.animation(.easeIn(duration: 0.15).delay(0.15)))
             }
         }
         .frame(
-            width: vm.isEditing ? 200 : (isHovered || vm.isRecording) ? 80 : PillConstants.width,
+            width: vm.isEditing ? 200 : (isHovered || vm.isRecording || vm.isSpeaking) ? 80 : PillConstants.width,
             height: isActive ? 28 : PillConstants.height
         )
         .background(Color(red: 0.15, green: 0.15, blue: 0.15))
