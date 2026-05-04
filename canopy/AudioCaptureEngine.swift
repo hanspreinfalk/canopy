@@ -9,7 +9,7 @@ import CoreFoundation
 /// Captures microphone audio and delivers raw AVAudioPCMBuffers.
 /// Both callbacks run on an audio thread — callers must not assume main thread.
 final class AudioCaptureEngine {
-    private let engine = AVAudioEngine()
+    private var engine = AVAudioEngine()
     private(set) var isRunning = false
 
     /// - Parameters:
@@ -21,11 +21,13 @@ final class AudioCaptureEngine {
     ) throws {
         guard !isRunning else { return }
 
+        // Fresh engine each time avoids stale thread/state from a previous session
+        engine = AVAudioEngine()
         let inputNode = engine.inputNode
-        let format = inputNode.outputFormat(forBus: 0)
 
-        inputNode.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, _ in
-            // Compute RMS power for the waveform
+        // nil format lets AVAudio match the hardware's native format automatically,
+        // avoiding the mismatch crash when the mic runs at a non-default rate (e.g. 24 kHz on Bluetooth)
+        inputNode.installTap(onBus: 0, bufferSize: 1024, format: nil) { buffer, _ in
             if let onPowerLevel, let channel = buffer.floatChannelData?[0] {
                 let frames = Int(buffer.frameLength)
                 var sum: Float = 0
@@ -38,7 +40,7 @@ final class AudioCaptureEngine {
 
         try engine.start()
         isRunning = true
-        print("🎙️ AudioCaptureEngine: started (\(format.sampleRate)Hz)")
+        print("🎙️ AudioCaptureEngine: started (\(inputNode.outputFormat(forBus: 0).sampleRate)Hz)")
     }
 
     func stop() {

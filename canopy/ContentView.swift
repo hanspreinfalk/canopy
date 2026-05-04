@@ -8,30 +8,12 @@
 import SwiftUI
 import AppKit
 import Combine
-import ConvexMobile
-
-struct TaskItem: Hashable, Decodable {
-    let _id: String
-    let isCompleted: Bool
-    let text: String
-}
 
 struct ContentView: View {
     @State private var isHovered = false
     @FocusState private var isFocused: Bool
     @StateObject private var vm = CanopyViewModel()
     var dismiss: () -> ()
-
-    // convex test
-    @State private var tasks: [TaskItem] = []
-    let client = ConvexClient(deploymentUrl: "https://oceanic-opossum-563.convex.cloud")
-    func fetchTasks() async {
-        do {
-            for try await tasks: [TaskItem] in client.subscribe(to: "tasks:get").values {
-                self.tasks = tasks
-            }
-        } catch {}
-    }
 
     private var isActive: Bool { isHovered || vm.isEditing || vm.isRecording || vm.isSpeaking }
 
@@ -48,7 +30,7 @@ struct ContentView: View {
                 }
                 HStack(alignment: .bottom, spacing: 8) {
                     mainPill
-                    if isActive && !vm.isRecording {
+                    if isActive && !vm.isRecording && (!vm.isSpeaking || isHovered) {
                         actionButton
                             .transition(.asymmetric(
                                 insertion: .opacity.animation(.easeIn(duration: 0.15).delay(0.2)),
@@ -126,6 +108,9 @@ struct ContentView: View {
         Button {
             if vm.isRecording {
                 // fn-up stops recording; button is just visual during recording
+            } else if vm.isSpeaking {
+                vm.cancel()
+                isHovered = false
             } else if vm.isSending {
                 vm.cancel()
                 isHovered = false
@@ -141,7 +126,7 @@ struct ContentView: View {
                     .foregroundColor(.red)
                     .font(.system(size: 12))
             } else {
-                let icon = vm.isSending ? "stop.fill" :
+                let icon = (vm.isSending || vm.isSpeaking) ? "stop.fill" :
                     (vm.isEditing && !vm.inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                         ? "arrow.up.circle.fill" : (vm.isEditing ? "xmark" : "pencil")
                 Image(systemName: icon)

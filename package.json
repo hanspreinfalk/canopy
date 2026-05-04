@@ -19,6 +19,7 @@
   },
   "homepage": "https://github.com/hanspreinfalk/canopy#readme",
   "dependencies": {
+    "@clerk/backend": "^2.33.3",
     "convex": "^1.37.0"
   },
   "devDependencies": {

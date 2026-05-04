@@ -2,27 +2,61 @@
 //  AppDelegate.swift
 //  canopy
 //
-//  Created by Hans Preinfalk on 5/3/26.
-//
 
 import AppKit
+import ClerkKit
 import HotKey
+import SwiftUI
+import Combine
 
 class AppDelegate: NSObject, NSApplicationDelegate {
-    var contentWindow: NSWindow?
+    private var pillWindow: ContentPanel?
+    private var onboardingWindow: NSWindow?
     var hotKey: HotKey?
     var statusItem: NSStatusItem?
+    let authViewModel = AuthViewModel()
+    private var authCancellable: AnyCancellable?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
         setupStatusItem()
-        showContentWindow()
         setupHotkey()
+        setupWindows()
+    }
+
+    private func setupWindows() {
+        pillWindow = ContentPanel()
+        onboardingWindow = makeOnboardingWindow()
+
+        authCancellable = authViewModel.$authState
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] state in
+                self?.updateWindows(for: state)
+            }
+    }
+
+    private func updateWindows(for state: AuthState) {
+        statusItem?.menu = buildStatusMenu()
+        switch state {
+        case .loading:
+            onboardingWindow?.orderOut(nil)
+            pillWindow?.orderOut(nil)
+        case .unauthenticated:
+            pillWindow?.orderOut(nil)
+            onboardingWindow?.makeKeyAndOrderFront(nil)
+        case .authenticated:
+            onboardingWindow?.orderOut(nil)
+            pillWindow?.makeKeyAndOrderFront(nil)
+            pillWindow?.makeKey()
+        }
     }
 
     func applicationDockMenu(_ sender: NSApplication) -> NSMenu? {
         let menu = NSMenu()
         menu.addItem(withTitle: "Open Canopy", action: #selector(openCanopy), keyEquivalent: "")
+        if authViewModel.authState == .authenticated {
+            menu.addItem(withTitle: "Log Out", action: #selector(logOut), keyEquivalent: "")
+        }
         menu.addItem(.separator())
         menu.addItem(withTitle: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "")
         return menu
@@ -33,43 +67,56 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if let button = statusItem?.button {
             button.image = NSImage(systemSymbolName: "leaf.fill", accessibilityDescription: "Canopy")
         }
+        statusItem?.menu = buildStatusMenu()
+    }
 
+    private func buildStatusMenu() -> NSMenu {
         let menu = NSMenu()
         menu.addItem(withTitle: "Open Canopy", action: #selector(openCanopy), keyEquivalent: "")
+        if authViewModel.authState == .authenticated {
+            menu.addItem(withTitle: "Log Out", action: #selector(logOut), keyEquivalent: "")
+        }
         menu.addItem(.separator())
         menu.addItem(withTitle: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
-        statusItem?.menu = menu
+        return menu
     }
 
     @objc private func openCanopy() {
         NSApp.activate(ignoringOtherApps: true)
-        showContentWindow()
+        updateWindows(for: authViewModel.authState)
+    }
+
+    @objc private func logOut() {
+        Task {
+            try? await Clerk.shared.auth.signOut()
+        }
     }
 
     private func setupHotkey() {
         hotKey = HotKey(key: .a, modifiers: [.command, .shift])
         hotKey?.keyDownHandler = { [weak self] in
             DispatchQueue.main.async {
-                self?.showContentWindow()
+                guard let self, self.authViewModel.authState == .authenticated else { return }
+                self.pillWindow?.makeKeyAndOrderFront(nil)
+                self.pillWindow?.makeKey()
             }
         }
     }
-    
-    func showContentWindow() {
-        self.closeReviewWindow()
-        
-        let contentPanel = ContentPanel()
-        
-        contentWindow = contentPanel
-        
-        contentPanel.makeKeyAndOrderFront(nil)
-        contentPanel.makeKey()
-    }
-    
-    private func closeReviewWindow() {
-        if let window = contentWindow {
-            window.close()
-            contentWindow = nil
-        }
+
+    private func makeOnboardingWindow() -> NSWindow {
+        let window = NSWindow(
+            contentRect: NSRect(origin: .zero, size: CGSize(width: 420, height: 340)),
+            styleMask: [.titled, .closable, .fullSizeContentView],
+            backing: .buffered,
+            defer: false
+        )
+        window.titlebarAppearsTransparent = true
+        window.titleVisibility = .hidden
+        window.backgroundColor = NSColor(red: 0.08, green: 0.08, blue: 0.08, alpha: 1.0)
+        window.isMovableByWindowBackground = true
+
+        window.contentView = NSHostingView(rootView: SignInView())
+        window.center()
+        return window
     }
 }

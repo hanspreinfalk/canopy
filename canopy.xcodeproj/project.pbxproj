@@ -9,15 +9,29 @@
 /* Begin PBXBuildFile section */
 		217C51D62FA827EF00936123 /* HotKey in Frameworks */ = {isa = PBXBuildFile; productRef = 217C51D52FA827EF00936123 /* HotKey */; };
 		217C51DB2FA8455E00936123 /* ConvexMobile in Frameworks */ = {isa = PBXBuildFile; productRef = 217C51DA2FA8455E00936123 /* ConvexMobile */; };
+		21AE85272FA90E7E007C5385 /* ClerkConvex in Frameworks */ = {isa = PBXBuildFile; productRef = 21AE85262FA90E7E007C5385 /* ClerkConvex */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		217C51812FA8106300936123 /* canopy.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = canopy.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		21AE852D2FA9173D007C5385 /* Exceptions for "canopy" folder in "canopy" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 217C51802FA8106300936123 /* canopy */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		217C51832FA8106300936123 /* canopy */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				21AE852D2FA9173D007C5385 /* Exceptions for "canopy" folder in "canopy" target */,
+			);
 			path = canopy;
 			sourceTree = "<group>";
 		};
@@ -30,6 +44,7 @@
 			files = (
 				217C51D62FA827EF00936123 /* HotKey in Frameworks */,
 				217C51DB2FA8455E00936123 /* ConvexMobile in Frameworks */,
+				21AE85272FA90E7E007C5385 /* ClerkConvex in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -74,6 +89,7 @@
 			packageProductDependencies = (
 				217C51D52FA827EF00936123 /* HotKey */,
 				217C51DA2FA8455E00936123 /* ConvexMobile */,
+				21AE85262FA90E7E007C5385 /* ClerkConvex */,
 			);
 			productName = canopy;
 			productReference = 217C51812FA8106300936123 /* canopy.app */;
@@ -106,6 +122,7 @@
 			packageReferences = (
 				217C51D42FA827EF00936123 /* XCRemoteSwiftPackageReference "HotKey" */,
 				217C51D92FA8455E00936123 /* XCRemoteSwiftPackageReference "convex-swift" */,
+				21AE85252FA90E7E007C5385 /* XCRemoteSwiftPackageReference "clerk-convex-swift" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 217C51822FA8106300936123 /* Products */;
@@ -264,7 +281,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = canopy/canopy.entitlements;
-				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "-";
+				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
@@ -274,6 +291,7 @@
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = canopy/Info.plist;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Canopy uses the microphone to transcribe your voice.";
 				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Canopy uses speech recognition to transcribe your voice.";
@@ -300,7 +318,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = canopy/canopy.entitlements;
-				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "-";
+				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
@@ -310,6 +328,7 @@
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = canopy/Info.plist;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Canopy uses the microphone to transcribe your voice.";
 				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Canopy uses speech recognition to transcribe your voice.";
@@ -370,6 +389,14 @@
 				minimumVersion = 0.8.1;
 			};
 		};
+		21AE85252FA90E7E007C5385 /* XCRemoteSwiftPackageReference "clerk-convex-swift" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/clerk/clerk-convex-swift";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 0.1.0;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -382,6 +409,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 217C51D92FA8455E00936123 /* XCRemoteSwiftPackageReference "convex-swift" */;
 			productName = ConvexMobile;
+		};
+		21AE85262FA90E7E007C5385 /* ClerkConvex */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 21AE85252FA90E7E007C5385 /* XCRemoteSwiftPackageReference "clerk-convex-swift" */;
+			productName = ClerkConvex;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

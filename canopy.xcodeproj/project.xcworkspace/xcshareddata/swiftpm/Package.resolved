@@ -1,6 +1,24 @@
 {
-  "originHash" : "401fad858fdeca01250c13cfcfd0e6e780203548cf192043ec88745a20f12e16",
+  "originHash" : "1070d29af57fd2c484e364456b9c916d8841547eb57af7af34512b0efe00d2cd",
   "pins" : [
+    {
+      "identity" : "clerk-convex-swift",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/clerk/clerk-convex-swift",
+      "state" : {
+        "revision" : "5c7e62ee329a00df0f9ed73462c54b069a7286ab",
+        "version" : "0.1.0"
+      }
+    },
+    {
+      "identity" : "clerk-ios",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/clerk/clerk-ios.git",
+      "state" : {
+        "revision" : "ad9545202ee24477a20bceccdb20461913788216",
+        "version" : "1.1.1"
+      }
+    },
     {
       "identity" : "convex-swift",
       "kind" : "remoteSourceControl",
@@ -17,6 +35,24 @@
       "state" : {
         "branch" : "main",
         "revision" : "a3cf605d7a96f6ff50e04fcb6dea6e2613cfcbe4"
+      }
+    },
+    {
+      "identity" : "nuke",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/kean/Nuke.git",
+      "state" : {
+        "revision" : "83e19143355b02e9261edb2323b3e1e93287ebb9",
+        "version" : "12.9.0"
+      }
+    },
+    {
+      "identity" : "phonenumberkit",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/marmelroy/PhoneNumberKit",
+      "state" : {
+        "revision" : "840ca3a89ced1a190e20ac93666ff3cdb376c973",
+        "version" : "4.2.11"
       }
     }
   ],
