@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		217C51D62FA827EF00936123 /* HotKey in Frameworks */ = {isa = PBXBuildFile; productRef = 217C51D52FA827EF00936123 /* HotKey */; };
+		217C51DB2FA8455E00936123 /* ConvexMobile in Frameworks */ = {isa = PBXBuildFile; productRef = 217C51DA2FA8455E00936123 /* ConvexMobile */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -28,6 +29,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				217C51D62FA827EF00936123 /* HotKey in Frameworks */,
+				217C51DB2FA8455E00936123 /* ConvexMobile in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -71,6 +73,7 @@
 			name = canopy;
 			packageProductDependencies = (
 				217C51D52FA827EF00936123 /* HotKey */,
+				217C51DA2FA8455E00936123 /* ConvexMobile */,
 			);
 			productName = canopy;
 			productReference = 217C51812FA8106300936123 /* canopy.app */;
@@ -102,6 +105,7 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				217C51D42FA827EF00936123 /* XCRemoteSwiftPackageReference "HotKey" */,
+				217C51D92FA8455E00936123 /* XCRemoteSwiftPackageReference "convex-swift" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 217C51822FA8106300936123 /* Products */;
@@ -352,6 +356,14 @@
 				kind = branch;
 			};
 		};
+		217C51D92FA8455E00936123 /* XCRemoteSwiftPackageReference "convex-swift" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/get-convex/convex-swift";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 0.8.1;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -359,6 +371,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 217C51D42FA827EF00936123 /* XCRemoteSwiftPackageReference "HotKey" */;
 			productName = HotKey;
+		};
+		217C51DA2FA8455E00936123 /* ConvexMobile */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 217C51D92FA8455E00936123 /* XCRemoteSwiftPackageReference "convex-swift" */;
+			productName = ConvexMobile;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

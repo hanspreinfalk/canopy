@@ -8,12 +8,36 @@
 import SwiftUI
 import AppKit
 
+// convex test
+import Combine
+import ConvexMobile
+
+// convex test
+struct TaskItem: Hashable, Decodable {
+    let _id: String
+    let isCompleted: Bool
+    let text: String
+}
+
 struct ContentView: View {
     @State private var isHovered = false
     @State private var isEditing = false
     @State private var inputText = ""
     @FocusState private var isFocused: Bool
     var dismiss: () -> ()
+    
+    // convex test
+    @State private var tasks: [TaskItem] = []
+    let client = ConvexClient(deploymentUrl: "https://oceanic-opossum-563.convex.cloud")
+    func fetchTasks() async {
+        do {
+            for try await tasks: [TaskItem] in client.subscribe(to: "tasks:get").values {
+                self.tasks = tasks
+            }
+        } catch {
+            // handle error
+        }
+    }
 
     var body: some View {
         ZStack(alignment: .bottom) {
