@@ -199,13 +199,7 @@ const handleOpenAIChat = httpAction(async (_ctx, request) => {
   );
 });
 
-// ─── /chat/anthropic-mcp ──────────────────────────────────────────────────────
-// Calls Claude in an agentic loop with the user's Composio tools.
-// 1. Fetch the user's active tools from Composio REST API.
-// 2. Pass them to Claude as regular `tools`.
-// 3. Execute any tool_use blocks via Composio execute endpoint.
-// 4. Loop until Claude stops with end_turn or no tools were available.
-// 5. Emit the final text as a single SSE chunk.
+// ─── Composio shared types & helpers ──────────────────────────────────────────
 
 type ComposioTool = {
   slug: string;
@@ -219,13 +213,29 @@ type AnthropicContentBlock =
   | { type: "text"; text: string }
   | { type: "tool_use"; id: string; name: string; input: Record<string, unknown> };
 
-type AnthropicMessage = {
-  stop_reason: string;
-  content: AnthropicContentBlock[];
-};
+// NOTE: buildSystemPrompt now returns a *static* prompt by default, so the
+// Anthropic prompt-cache prefix is stable across requests. If you need the
+// current date in-prompt, use the `dynamic` flag — but that disables caching
+// of the system block. Models can usually figure out "now" from context.
+function buildSystemPrompt(opts: { dynamic?: boolean } = {}): string {
+  const date = opts.dynamic ? `The current date and time is ${new Date().toUTCString()}.\n\n` : "";
+  return `${date}You're talking to someone who's busy and smart and doesn't want to be sold to. You're their sharp friend who happens to be good with their tools — not a feature page, not a help desk, not an AI assistant doing AI assistant things.
 
-function buildSystemPrompt(): string {
-  return `The current date and time is ${new Date().toUTCString()}.`;
+# How you talk
+Like a person. Contractions. Short sentences when short sentences work. Longer when the thought needs room. You crack jokes when something is genuinely funny, not because the script says "be funny here." Dry asides land better than try-hard ones. You read the room — if they're frustrated, drop the bit. If they're casual, ride it. Spanish, English, Spanglish, all fine, follow their lead.
+
+# What you don't do
+You don't bullet-list things at people. You don't write headers. You don't say "I can help with a bunch of things!" and then itemize your features like a SaaS landing page — that's the exact tone you're replacing. If someone asks "what can you do," answer like a friend would: give them a flavor of it in one or two sentences and ask what they're actually trying to get done. Nobody wants a menu, they want a conversation.
+
+You don't say "Great question!" You don't say "I'd be happy to help!" You don't summarize their question back at them before answering. You don't end every message asking if there's anything else. Just talk to them.
+
+# Tools
+You can poke around in their email, calendar, Stripe, etc. When you're about to use one, say what you're doing in a quick natural sentence — "lemme peek at your calendar," "checking your inbox," "one sec, pulling up your last invoice" — then do it. Don't say the tool name, just say what you're doing. After it comes back, give them the answer.
+
+If they ask what you can do, don't list tools. Say something like "depends — what's bugging you?" or "honestly easier if you just tell me what you need." Then react to what they actually want.
+
+# Substance
+Lead with the answer. Reasoning after, if it's useful. If they're wrong, tell them, kindly. If you're not sure, say so — pretending to know is worse than admitting a gap. Be brief by default; expand when the topic earns it. Markdown formatting (headers, bullet lists, bold) is for documents, not conversations — avoid it unless the user is clearly asking for a structured output.`;
 }
 
 const COMPOSIO_BASE = "https://backend.composio.dev";
@@ -234,8 +244,34 @@ function composioHeaders() {
   return { "x-api-key": process.env.COMPOSIO_API_KEY!, "Content-Type": "application/json" };
 }
 
-// Shared helper: fetch tools for all of a user's active connected toolkits.
-async function fetchComposioTools(entityId: string): Promise<ComposioTool[]> {
+// ─── Composio tool cache ──────────────────────────────────────────────────────
+//
+// Per-process in-memory cache of Composio tools, keyed by entityId.
+// Avoids re-fetching connected_accounts + per-toolkit tools on every message.
+//
+// TTL is intentionally short-ish: long enough to cover a multi-message chat
+// session, short enough that newly-connected toolkits show up reasonably soon.
+// Call `invalidateComposioToolsCache(entityId)` from your "user connected a
+// toolkit" handler to make changes immediate.
+
+const COMPOSIO_TOOLS_TTL_MS = 5 * 60 * 1000; // 5 minutes
+type CacheEntry = { tools: ComposioTool[]; expiresAt: number };
+const composioToolsCache = new Map<string, CacheEntry>();
+// Coalesce concurrent fetches for the same entityId so a burst of messages
+// doesn't trigger N parallel cache-misses.
+const composioToolsInflight = new Map<string, Promise<ComposioTool[]>>();
+
+export function invalidateComposioToolsCache(entityId?: string) {
+  if (entityId) {
+    composioToolsCache.delete(entityId);
+    composioToolsInflight.delete(entityId);
+  } else {
+    composioToolsCache.clear();
+    composioToolsInflight.clear();
+  }
+}
+
+async function fetchComposioToolsUncached(entityId: string): Promise<ComposioTool[]> {
   const connResp = await fetch(
     `${COMPOSIO_BASE}/api/v3/connected_accounts?user_ids=${encodeURIComponent(entityId)}&limit=100`,
     { headers: composioHeaders() }
@@ -268,6 +304,29 @@ async function fetchComposioTools(entityId: string): Promise<ComposioTool[]> {
   return toolArrays.flat();
 }
 
+async function fetchComposioTools(entityId: string): Promise<ComposioTool[]> {
+  const now = Date.now();
+  const cached = composioToolsCache.get(entityId);
+  if (cached && cached.expiresAt > now) {
+    return cached.tools;
+  }
+
+  const inflight = composioToolsInflight.get(entityId);
+  if (inflight) return inflight;
+
+  const promise = (async () => {
+    try {
+      const tools = await fetchComposioToolsUncached(entityId);
+      composioToolsCache.set(entityId, { tools, expiresAt: Date.now() + COMPOSIO_TOOLS_TTL_MS });
+      return tools;
+    } finally {
+      composioToolsInflight.delete(entityId);
+    }
+  })();
+  composioToolsInflight.set(entityId, promise);
+  return promise;
+}
+
 async function executeComposioTool(
   toolName: string,
   args: Record<string, unknown>,
@@ -280,6 +339,254 @@ async function executeComposioTool(
   });
   return resp.ok ? resp.json() : { error: `HTTP ${resp.status}` };
 }
+
+// ─── SSE event helpers ────────────────────────────────────────────────────────
+//
+// In addition to the existing `{text: "..."}` chunks, we now emit
+// `{tool_start: {name, id}}` and `{tool_end: {id, ok}}` events so the
+// frontend can render a "Calling gmail_send..." indicator while tools run.
+
+function emitText(
+  controller: ReadableStreamDefaultController<Uint8Array>,
+  encoder: TextEncoder,
+  text: string
+) {
+  console.log(`[${Date.now()}] emitText: ${text.slice(0, 40).replace(/\n/g, "\\n")}`);
+  controller.enqueue(encoder.encode(`data: ${JSON.stringify({ text })}\n\n`));
+}
+
+function emitEvent(
+  controller: ReadableStreamDefaultController<Uint8Array>,
+  encoder: TextEncoder,
+  event: Record<string, unknown>
+) {
+  console.log(`[${Date.now()}] emitEvent: ${JSON.stringify(event).slice(0, 80)}`);
+  controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+}
+
+// ─── /chat/google-mcp (Gemini + Composio tools) ───────────────────────────────
+
+type GeminiContent = { role: string; parts: Array<Record<string, unknown>> };
+
+function buildGeminiToolsFromComposio(rawTools: ComposioTool[]): unknown[] {
+  if (rawTools.length === 0) return [];
+  return [
+    {
+      functionDeclarations: rawTools.map((t) => ({
+        name: t.slug,
+        description: (t.description ?? "").slice(0, 4096),
+        parameters: (t.input_parameters ?? t.input_schema ?? t.parameters ?? {
+          type: "object",
+          properties: {},
+        }) as Record<string, unknown>,
+      })),
+    },
+  ];
+}
+
+function extractGeminiFunctionCallsFromCandidate(
+  cand: Record<string, unknown> | null
+): Record<string, unknown>[] {
+  if (!cand) return [];
+  const content = cand["content"] as Record<string, unknown> | undefined;
+  const parts = content?.["parts"] as Array<Record<string, unknown>> | undefined;
+  const out: Record<string, unknown>[] = [];
+  for (const p of parts ?? []) {
+    const fc = p["functionCall"] as Record<string, unknown> | undefined;
+    if (fc && typeof fc["name"] === "string") out.push(fc);
+  }
+  return out;
+}
+
+/** One Gemini streamGenerateContent turn; streams text deltas; returns function calls from final candidate. */
+async function runGeminiTurnStreaming(
+  model: string,
+  contents: GeminiContent[],
+  toolsPayload: unknown[] | null,
+  controller: ReadableStreamDefaultController<Uint8Array>,
+  encoder: TextEncoder
+): Promise<{ functionCallsRaw: Record<string, unknown>[] }> {
+  const body: Record<string, unknown> = {
+    systemInstruction: { parts: [{ text: buildSystemPrompt() }] },
+    contents,
+    generationConfig: { temperature: 0.7, maxOutputTokens: 4096 },
+  };
+  if (toolsPayload && toolsPayload.length > 0) {
+    body.tools = toolsPayload;
+    body.toolConfig = { functionCallingConfig: { mode: "AUTO" } };
+  }
+
+  const response = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse&key=${process.env.GOOGLE_GENERATIVE_AI_API_KEY}`,
+    { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }
+  );
+
+  if (!response.ok || !response.body) {
+    const err = await response.text();
+    throw Object.assign(new Error(`Gemini error ${response.status}`), { status: response.status, body: err });
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  let textSnapshot = "";
+  let lastCandidate: Record<string, unknown> | null = null;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    const lines = buf.split("\n");
+    buf = lines.pop() ?? "";
+
+    for (const line of lines) {
+      if (!line.startsWith("data: ")) continue;
+      const payload = line.slice(6).trim();
+      if (!payload || payload === "[DONE]") continue;
+      let ev: Record<string, unknown>;
+      try {
+        ev = JSON.parse(payload);
+      } catch {
+        continue;
+      }
+
+      const err = ev["error"] as Record<string, unknown> | undefined;
+      if (err) {
+        throw new Error(`Gemini stream error: ${JSON.stringify(err)}`);
+      }
+
+      const candidates = ev["candidates"] as Array<Record<string, unknown>> | undefined;
+      const cand = candidates?.[0];
+      if (cand) lastCandidate = cand;
+
+      const parts = (cand?.["content"] as Record<string, unknown> | undefined)?.["parts"] as
+        | Array<Record<string, unknown>>
+        | undefined;
+      if (!parts?.length) continue;
+
+      let chunkText = "";
+      for (const p of parts) {
+        if (typeof p["text"] === "string") chunkText += p["text"];
+      }
+      if (!chunkText) continue;
+
+      if (chunkText.startsWith(textSnapshot)) {
+        const delta = chunkText.slice(textSnapshot.length);
+        textSnapshot = chunkText;
+        if (delta) emitText(controller, encoder, delta);
+      } else {
+        textSnapshot += chunkText;
+        emitText(controller, encoder, chunkText);
+      }
+    }
+  }
+
+  return { functionCallsRaw: extractGeminiFunctionCallsFromCandidate(lastCandidate) };
+}
+
+const handleGoogleMCPChat = httpAction(async (_ctx, request) => {
+  const {
+    message,
+    model = "gemini-2.5-flash",
+    history = [],
+    entityId = "default",
+  } = (await request.json()) as MCPChatRequest;
+
+  const encoder = new TextEncoder();
+
+  const stream = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      try {
+        const rawTools = await fetchComposioTools(entityId).catch(() => [] as ComposioTool[]);
+        const geminiTools = buildGeminiToolsFromComposio(rawTools);
+        console.log(`[/chat/google-mcp] Composio tools: ${rawTools.length}`);
+
+        const contents: GeminiContent[] = [
+          ...history.map((m) => ({
+            role: m.role === "assistant" ? "model" : "user",
+            parts: [{ text: m.content }],
+          })),
+          { role: "user", parts: [{ text: message }] },
+        ];
+
+        const MAX_TURNS = 8;
+
+        for (let t = 0; t < MAX_TURNS; t++) {
+          const { functionCallsRaw } = await runGeminiTurnStreaming(
+            model,
+            contents,
+            geminiTools.length > 0 ? geminiTools : null,
+            controller,
+            encoder
+          );
+
+          if (functionCallsRaw.length === 0) break;
+
+          // Emit tool_start for each call so the UI can show progress.
+          for (const fc of functionCallsRaw) {
+            emitEvent(controller, encoder, {
+              tool_start: { name: fc["name"] as string, id: (fc["id"] as string) ?? null },
+            });
+          }
+
+          const toolResults = await Promise.all(
+            functionCallsRaw.map(async (fc) => {
+              const name = fc["name"] as string;
+              const args = (fc["args"] ?? fc["arguments"] ?? {}) as Record<string, unknown>;
+              const execData = await executeComposioTool(name, args, entityId).catch((err) => ({
+                error: String(err),
+              }));
+              const ok = !(execData && typeof execData === "object" && "error" in execData);
+              emitEvent(controller, encoder, {
+                tool_end: { name, id: (fc["id"] as string) ?? null, ok },
+              });
+              console.log(`[/chat/google-mcp] executed ${name}:`, JSON.stringify(execData).slice(0, 200));
+              return execData;
+            })
+          );
+
+          contents.push({
+            role: "model",
+            parts: functionCallsRaw.map((fc) => ({ functionCall: fc })),
+          });
+          contents.push({
+            role: "user",
+            parts: functionCallsRaw.map((fc, i) => {
+              const name = fc["name"] as string;
+              const part: Record<string, unknown> = {
+                name,
+                response: { result: toolResults[i] },
+              };
+              if (typeof fc["id"] === "string") part.id = fc["id"];
+              return { functionResponse: part };
+            }),
+          });
+        }
+
+        controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+        controller.close();
+      } catch (err) {
+        console.error("[/chat/google-mcp] error:", err);
+        try {
+          controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+        } catch {
+          /* ignore */
+        }
+        controller.close();
+      }
+    },
+  });
+
+  return new Response(stream, {
+    status: 200,
+    headers: {
+      "content-type": "text/event-stream",
+      "cache-control": "no-cache, no-transform",
+      "x-accel-buffering": "no",
+      "connection": "keep-alive",
+    },
+  });
+});
 
 // ─── Streaming agentic turn helpers ──────────────────────────────────────────
 
@@ -343,7 +650,7 @@ async function runAnthropicTurnStreaming(
         if (blk?.type === "text" && delta.type === "text_delta") {
           const chunk = delta.text as string;
           blk.text += chunk;
-          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ text: chunk })}\n\n`));
+          emitText(controller, encoder, chunk);
         } else if (blk?.type === "tool_use" && delta.type === "input_json_delta") {
           blk.inputJson += delta.partial_json as string;
         }
@@ -418,7 +725,7 @@ async function runOpenAITurnStreaming(
       const content = delta?.content as string | null | undefined;
       if (content) {
         assistantContent += content;
-        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ text: content })}\n\n`));
+        emitText(controller, encoder, content);
       }
 
       const tcDeltas = delta?.tool_calls as Array<Record<string, unknown>> | undefined;
@@ -448,7 +755,7 @@ async function runOpenAITurnStreaming(
 const handleAnthropicMCPChat = httpAction(async (_ctx, request) => {
   const {
     message,
-    model = "claude-opus-4-7",
+    model = "claude-sonnet-4-6",
     history = [],
     entityId = "default",
   } = (await request.json()) as MCPChatRequest;
@@ -459,15 +766,36 @@ const handleAnthropicMCPChat = httpAction(async (_ctx, request) => {
     async start(controller) {
       try {
         const rawTools = await fetchComposioTools(entityId).catch(() => [] as ComposioTool[]);
-        const anthropicTools = rawTools.map((t) => ({
-          name: t.slug,
-          description: t.description ?? "",
-          input_schema: (t.input_parameters ?? t.input_schema ?? t.parameters ?? {
-            type: "object",
-            properties: {},
-          }) as Record<string, unknown>,
-        }));
+        // Build the tool list. Mark the LAST tool with cache_control so
+        // Anthropic caches the entire tools+system prefix. On follow-up
+        // messages within ~5 minutes, this is a cache hit and TTFT drops
+        // dramatically (and you pay 1/10th for the cached tokens).
+        const anthropicTools = rawTools.map((t, i) => {
+          const tool: Record<string, unknown> = {
+            name: t.slug,
+            description: t.description ?? "",
+            input_schema: (t.input_parameters ?? t.input_schema ?? t.parameters ?? {
+              type: "object",
+              properties: {},
+            }) as Record<string, unknown>,
+          };
+          if (i === rawTools.length - 1) {
+            tool.cache_control = { type: "ephemeral" };
+          }
+          return tool;
+        });
         console.log(`[/chat/anthropic-mcp] ${anthropicTools.length} tools:`, anthropicTools.map((t) => t.name));
+
+        // System prompt as an array so we can attach cache_control. This
+        // caches the system block separately (and the tools block builds on
+        // top of it).
+        const systemBlocks = [
+          {
+            type: "text" as const,
+            text: buildSystemPrompt(),
+            cache_control: { type: "ephemeral" as const },
+          },
+        ];
 
         type ConvMessage = { role: string; content: unknown };
         const messages: ConvMessage[] = [
@@ -478,7 +806,12 @@ const handleAnthropicMCPChat = httpAction(async (_ctx, request) => {
         const MAX_TURNS = 8;
 
         for (let turn = 0; turn < MAX_TURNS; turn++) {
-          const reqBody: Record<string, unknown> = { model, max_tokens: 4096, system: buildSystemPrompt(), messages };
+          const reqBody: Record<string, unknown> = {
+            model,
+            max_tokens: 4096,
+            system: systemBlocks,
+            messages,
+          };
           if (anthropicTools.length > 0) reqBody.tools = anthropicTools;
 
           const { allContent, stopReason } = await runAnthropicTurnStreaming(reqBody, controller, encoder);
@@ -490,11 +823,22 @@ const handleAnthropicMCPChat = httpAction(async (_ctx, request) => {
               b.type === "tool_use"
           );
 
+          // Tell the UI which tools are starting before we await them.
+          for (const toolUse of toolUseBlocks) {
+            emitEvent(controller, encoder, {
+              tool_start: { name: toolUse.name, id: toolUse.id },
+            });
+          }
+
           const toolResults = await Promise.all(
             toolUseBlocks.map(async (toolUse) => {
               const execData = await executeComposioTool(toolUse.name, toolUse.input, entityId).catch(
                 (err) => ({ error: String(err) })
               );
+              const ok = !(execData && typeof execData === "object" && "error" in execData);
+              emitEvent(controller, encoder, {
+                tool_end: { name: toolUse.name, id: toolUse.id, ok },
+              });
               console.log(`[/chat/anthropic-mcp] executed ${toolUse.name}:`, JSON.stringify(execData).slice(0, 200));
               return { type: "tool_result" as const, tool_use_id: toolUse.id, content: JSON.stringify(execData) };
             })
@@ -516,7 +860,12 @@ const handleAnthropicMCPChat = httpAction(async (_ctx, request) => {
 
   return new Response(stream, {
     status: 200,
-    headers: { "content-type": "text/event-stream", "cache-control": "no-cache" },
+    headers: {
+      "content-type": "text/event-stream",
+      "cache-control": "no-cache, no-transform",
+      "x-accel-buffering": "no",
+      "connection": "keep-alive",
+    },
   });
 });
 
@@ -571,12 +920,22 @@ const handleOpenAIToolsChat = httpAction(async (_ctx, request) => {
 
           if (finishReason !== "tool_calls") break;
 
+          for (const tc of toolCalls) {
+            emitEvent(controller, encoder, {
+              tool_start: { name: tc.function.name, id: tc.id },
+            });
+          }
+
           const toolResults = await Promise.all(
             toolCalls.map(async (tc) => {
               const args = JSON.parse(tc.function.arguments) as Record<string, unknown>;
               const execData = await executeComposioTool(tc.function.name, args, entityId).catch(
                 (err) => ({ error: String(err) })
               );
+              const ok = !(execData && typeof execData === "object" && "error" in execData);
+              emitEvent(controller, encoder, {
+                tool_end: { name: tc.function.name, id: tc.id, ok },
+              });
               console.log(`[/chat/openai-tools] executed ${tc.function.name}:`, JSON.stringify(execData).slice(0, 200));
               return { role: "tool" as const, tool_call_id: tc.id, content: JSON.stringify(execData) };
             })
@@ -598,7 +957,12 @@ const handleOpenAIToolsChat = httpAction(async (_ctx, request) => {
 
   return new Response(stream, {
     status: 200,
-    headers: { "content-type": "text/event-stream", "cache-control": "no-cache" },
+    headers: {
+      "content-type": "text/event-stream",
+      "cache-control": "no-cache, no-transform",
+      "x-accel-buffering": "no",
+      "connection": "keep-alive",
+    },
   });
 });
 
@@ -606,6 +970,7 @@ const handleOpenAIToolsChat = httpAction(async (_ctx, request) => {
 
 export function registerChatRoutes(http: HttpRouter) {
   http.route({ path: "/chat/google", method: "POST", handler: handleGoogleChat });
+  http.route({ path: "/chat/google-mcp", method: "POST", handler: handleGoogleMCPChat });
   http.route({ path: "/chat/anthropic", method: "POST", handler: handleAnthropicChat });
   http.route({ path: "/chat/anthropic-mcp", method: "POST", handler: handleAnthropicMCPChat });
   http.route({ path: "/chat/openai", method: "POST", handler: handleOpenAIChat });

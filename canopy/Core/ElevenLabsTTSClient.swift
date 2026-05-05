@@ -26,9 +26,10 @@ final class ElevenLabsTTSClient: NSObject {
         self.session = URLSession(configuration: configuration)
     }
 
-    /// Fetches audio from ElevenLabs, plays it, and awaits until playback finishes.
-    /// Fires `onPowerLevel` at ~30 fps while speaking so callers can drive a waveform.
-    func speakText(_ text: String) async throws {
+    /// Fetches audio from ElevenLabs and returns the raw MP3 bytes without
+    /// playing them. Use this when you want to manage playback yourself
+    /// (e.g. sentence-chunked queueing through `AudioPlaybackQueue`).
+    func synthesize(_ text: String) async throws -> Data {
         var request = URLRequest(url: proxyURL)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -37,6 +38,9 @@ final class ElevenLabsTTSClient: NSObject {
         let body: [String: Any] = [
             "text": text,
             "model_id": "eleven_flash_v2_5",
+            // 0…4; higher values reduce time-to-first-byte at small quality cost.
+            // Useful even for non-streaming endpoints since it gates internal buffering.
+            "optimize_streaming_latency": 3,
             "voice_settings": ["stability": 0.5, "similarity_boost": 0.75]
         ]
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
@@ -52,6 +56,17 @@ final class ElevenLabsTTSClient: NSObject {
             throw NSError(domain: "ElevenLabsTTS", code: httpResponse.statusCode,
                           userInfo: [NSLocalizedDescriptionKey: "TTS API error (\(httpResponse.statusCode)): \(errorBody)"])
         }
+
+        try Task.checkCancellation()
+        return data
+    }
+
+    /// Fetches audio from ElevenLabs, plays it, and awaits until playback finishes.
+    /// Fires `onPowerLevel` at ~30 fps while speaking so callers can drive a waveform.
+    /// Kept for any non-streaming callers; the streaming chat flow uses
+    /// `synthesize(_:)` + `AudioPlaybackQueue` instead.
+    func speakText(_ text: String) async throws {
+        let data = try await synthesize(text)
 
         try Task.checkCancellation()
 

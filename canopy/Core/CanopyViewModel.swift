@@ -41,6 +41,7 @@ final class CanopyViewModel: ObservableObject {
     )
     private var providerCancellable: AnyCancellable?
     private let ttsClient = ElevenLabsTTSClient(proxyURL: "https://oceanic-opossum-563.convex.site/tts")
+    private lazy var voice: ChatVoiceController = ChatVoiceController(ttsClient: ttsClient)
     private let transcriptionProvider: any CustomTranscriptionProvider
     private let audioEngine = AudioCaptureEngine()
     private let fnKeyMonitor = FnKeyMonitor()
@@ -79,7 +80,12 @@ final class CanopyViewModel: ObservableObject {
     init() {
         transcriptionProvider = CustomTranscriptionProviderFactory.makeDefaultProvider()
         setupFnKeyMonitor()
+        // Power level for the speaking visualizer is now driven by the
+        // sentence-chunked playback queue inside ChatVoiceController.
+        // Keep the direct TTS hookup too in case anything still calls
+        // speakText() — both paths feed the same @Published property.
         ttsClient.onPowerLevel = { [weak self] power in self?.ttsPowerLevel = power }
+        voice.onPowerLevel = { [weak self] power in self?.ttsPowerLevel = power }
         providerCancellable = AIProviderStore.shared.$chatProvider
             .dropFirst()
             .receive(on: DispatchQueue.main)
@@ -160,10 +166,14 @@ final class CanopyViewModel: ObservableObject {
         lastMessageSentAt = Date()
 
         isSending = true
+        // Cut off any leftover audio from the previous turn before starting.
+        voice.interrupt()
+        isSpeaking = true
 
         let historySnapshot = conversationHistory
 
         sendTask = Task {
+            var fullText = ""
             do {
                 Task {
                     do {
@@ -174,28 +184,47 @@ final class CanopyViewModel: ObservableObject {
                     }
                 }
 
-                let fullText = try await chatAPI.sendMessage(messageText, history: historySnapshot) { _ in }
-
-                conversationHistory.append(ChatMessage(role: "user", content: messageText))
-                conversationHistory.append(ChatMessage(role: "assistant", content: fullText))
-                // Keep only the last 10 exchanges (20 messages)
-                if conversationHistory.count > 20 {
-                    conversationHistory.removeFirst(conversationHistory.count - 20)
+                for try await event in chatAPI.sendMessage(messageText, history: historySnapshot) {
+                    if Task.isCancelled { break }
+                    switch event {
+                    case .text(let chunk):
+                        fullText += chunk
+                        voice.handleTextChunk(fullText)
+                    case .toolStart:
+                        // Flush whatever preamble we have so it plays
+                        // DURING the tool call, not after.
+                        voice.handleToolStart()
+                    case .toolEnd:
+                        voice.handleToolEnd()
+                    case .error(let msg, let detail):
+                        print("❌ stream error: \(msg)\(detail.map { " — \($0)" } ?? "")")
+                    }
                 }
+                voice.handleStreamEnd()
 
-                Task {
-                    do {
-                        let args: [String: ConvexEncodable?] = ["role": "assistant", "content": fullText]
-                        try await convex.mutation("conversations:saveMessage", with: args)
-                    } catch {
-                        print("❌ saveMessage(assistant) failed: \(error)")
+                if !Task.isCancelled, !fullText.isEmpty {
+                    conversationHistory.append(ChatMessage(role: "user", content: messageText))
+                    conversationHistory.append(ChatMessage(role: "assistant", content: fullText))
+                    // Keep only the last 10 exchanges (20 messages)
+                    if conversationHistory.count > 20 {
+                        conversationHistory.removeFirst(conversationHistory.count - 20)
+                    }
+
+                    Task {
+                        do {
+                            let args: [String: ConvexEncodable?] = ["role": "assistant", "content": fullText]
+                            try await convex.mutation("conversations:saveMessage", with: args)
+                        } catch {
+                            print("❌ saveMessage(assistant) failed: \(error)")
+                        }
                     }
                 }
 
-                isSpeaking = true
-                try await ttsClient.speakText(fullText)
+                // Hold the speaking indicator (and treat fn as cancel) until
+                // every queued sentence has actually played.
+                await voice.awaitPlaybackFinished()
             } catch is CancellationError {
-                // cancelled
+                // cancelled — voice.interrupt() was called by cancel()
             } catch {
                 print("❌ CanopyViewModel error: \(error)")
             }
@@ -211,6 +240,7 @@ final class CanopyViewModel: ObservableObject {
         isSending = false
         isSpeaking = false
         ttsPowerLevel = 0
+        voice.interrupt()
         ttsClient.stopPlayback()
     }
 
