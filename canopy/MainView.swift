@@ -30,6 +30,7 @@ private enum Layout {
 
 struct MainView: View {
     @StateObject private var vm = MainViewModel()
+    @ObservedObject private var aiStore = AIProviderStore.shared
     @State private var searchText = ""
     @State private var selectedSection: SidebarSection = .conversations
     @State private var sidebarVisible: Bool = true
@@ -296,6 +297,7 @@ struct MainView: View {
     private var chatPanel: some View {
         VStack(spacing: 0) {
             panelToolbar(title: chatPanelTitle) {
+                modelPickerButton
                 ToolbarIconButton(icon: "square.and.arrow.up") {}
                 ToolbarIconButton(icon: "square.on.square") {}
             }
@@ -338,6 +340,59 @@ struct MainView: View {
                     .foregroundColor(.secondary)
                     .frame(maxWidth: .infinity)
                 Spacer()
+            }
+        }
+    }
+
+    private var modelPickerButton: some View {
+        Menu {
+            Section("Google") {
+                providerButton("Gemini 2.5 Flash", provider: .google(model: "gemini-2.5-flash"))
+                providerButton("Gemini 2.5 Pro",   provider: .google(model: "gemini-2.5-pro"))
+                providerButton("Gemini 2.0 Flash", provider: .google(model: "gemini-2.0-flash"))
+            }
+            Section("Anthropic") {
+                providerButton("Claude Sonnet 4.6", provider: .anthropic(model: "claude-sonnet-4-6"))
+                providerButton("Claude Opus 4.7",   provider: .anthropic(model: "claude-opus-4-7"))
+                providerButton("Claude Haiku 4.5",  provider: .anthropic(model: "claude-haiku-4-5-20251001"))
+            }
+            Section("OpenAI") {
+                providerButton("GPT-4o",      provider: .openai(model: "gpt-4o"))
+                providerButton("GPT-4o Mini", provider: .openai(model: "gpt-4o-mini"))
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: "cpu")
+                    .font(.system(size: 11, weight: .medium))
+                Text(aiStore.chatProvider.shortName)
+                    .font(.system(size: 12, weight: .medium))
+            }
+            .foregroundColor(.primary.opacity(0.75))
+            .padding(.horizontal, 8)
+            .padding(.vertical, 5)
+            .background(
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(Color.primary.opacity(0.05))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .strokeBorder(Color.primary.opacity(0.06), lineWidth: 0.5)
+            )
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+    }
+
+    private func providerButton(_ title: String, provider: ChatProvider) -> some View {
+        Button {
+            aiStore.setProvider(provider)
+        } label: {
+            HStack {
+                Text(title)
+                if aiStore.chatProvider.rawValue == provider.rawValue {
+                    Spacer()
+                    Image(systemName: "checkmark")
+                }
             }
         }
     }

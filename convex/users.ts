@@ -35,6 +35,23 @@ export const updateSelfSummary = mutation({
   },
 });
 
+export const getPreferredModel = query({
+  args: {},
+  handler: async (ctx) => {
+    const user = await getAuthedUser(ctx);
+    return { preferredModel: user.preferredModel ?? null };
+  },
+});
+
+export const updatePreferredModel = mutation({
+  args: { model: v.string() },
+  handler: async (ctx, args) => {
+    const user = await getAuthedUser(ctx);
+    await ctx.db.patch(user._id, { preferredModel: args.model });
+    return null;
+  },
+});
+
 export const upsertFromClerkWebhook = internalMutation({
   args: {
     clerkUserId: v.string(),

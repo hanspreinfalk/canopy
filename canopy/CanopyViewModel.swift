@@ -17,7 +17,6 @@ final class CanopyViewModel: ObservableObject {
     @Published var isSending = false
     @Published var isRecording = false
     @Published var inputText = ""
-    @Published var geminiResponse = ""
     @Published var liveTranscript = ""
     @Published var audioPowerLevel: CGFloat = 0.0
     @Published var isSpeaking = false
@@ -25,7 +24,9 @@ final class CanopyViewModel: ObservableObject {
 
     // MARK: - Private dependencies
 
-    private let geminiAPI = GeminiAPI(proxyBaseURL: "https://oceanic-opossum-563.convex.site")
+    private static let convexBaseURL = "https://oceanic-opossum-563.convex.site"
+    private var chatAPI = ChatAPI(baseURL: CanopyViewModel.convexBaseURL, provider: AIProviderStore.shared.chatProvider)
+    private var providerCancellable: AnyCancellable?
     private let ttsClient = ElevenLabsTTSClient(proxyURL: "https://oceanic-opossum-563.convex.site/tts")
     private let transcriptionProvider: any CustomTranscriptionProvider
     private let audioEngine = AudioCaptureEngine()
@@ -42,6 +43,12 @@ final class CanopyViewModel: ObservableObject {
         transcriptionProvider = CustomTranscriptionProviderFactory.makeDefaultProvider()
         setupFnKeyMonitor()
         ttsClient.onPowerLevel = { [weak self] power in self?.ttsPowerLevel = power }
+        providerCancellable = AIProviderStore.shared.$chatProvider
+            .dropFirst()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] provider in
+                self?.chatAPI = ChatAPI(baseURL: CanopyViewModel.convexBaseURL, provider: provider)
+            }
     }
 
     // MARK: - fn key monitoring
@@ -72,9 +79,8 @@ final class CanopyViewModel: ObservableObject {
         inputText = ""
     }
 
-    // MARK: - Send to Gemini + TTS
+    // MARK: - Send
 
-    /// Sends `text` (or `inputText` if nil) through Gemini then ElevenLabs.
     func sendMessage(text overrideText: String? = nil) {
         let messageText: String
         if let overrideText {
@@ -86,7 +92,6 @@ final class CanopyViewModel: ObservableObject {
         guard !messageText.isEmpty else { return }
 
         isSending = true
-        geminiResponse = ""
 
         sendTask = Task {
             do {
@@ -99,9 +104,7 @@ final class CanopyViewModel: ObservableObject {
                     }
                 }
 
-                let fullText = try await geminiAPI.sendMessage(messageText) { [weak self] chunk in
-                    self?.geminiResponse = chunk
-                }
+                let fullText = try await chatAPI.sendMessage(messageText) { _ in }
 
                 Task {
                     do {
@@ -115,14 +118,13 @@ final class CanopyViewModel: ObservableObject {
                 isSpeaking = true
                 try await ttsClient.speakText(fullText)
             } catch is CancellationError {
-                // cancelled mid-Gemini or mid-TTS
+                // cancelled
             } catch {
                 print("❌ CanopyViewModel error: \(error)")
             }
             isSending = false
             isSpeaking = false
             ttsPowerLevel = 0
-            geminiResponse = ""
         }
     }
 
@@ -132,7 +134,6 @@ final class CanopyViewModel: ObservableObject {
         isSending = false
         isSpeaking = false
         ttsPowerLevel = 0
-        geminiResponse = ""
         ttsClient.stopPlayback()
     }
 

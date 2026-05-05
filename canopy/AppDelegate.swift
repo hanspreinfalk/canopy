@@ -9,7 +9,7 @@ import HotKey
 import SwiftUI
 import Combine
 
-class AppDelegate: NSObject, NSApplicationDelegate {
+class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var pillWindow: ContentPanel?
     private var onboardingWindow: NSWindow?
     private var conversationsWindow: NSWindow?
@@ -69,7 +69,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if let button = statusItem?.button {
             button.image = NSImage(systemSymbolName: "leaf.fill", accessibilityDescription: "Canopy")
         }
-        statusItem?.menu = buildStatusMenu()
+        let menu = buildStatusMenu()
+        menu.delegate = self
+        statusItem?.menu = menu
+    }
+
+    // Rebuild before each open so checkmarks reflect the current provider
+    func menuWillOpen(_ menu: NSMenu) {
+        let fresh = buildStatusMenu()
+        fresh.delegate = self
+        statusItem?.menu = fresh
     }
 
     private func buildStatusMenu() -> NSMenu {
@@ -77,11 +86,48 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(withTitle: "Open Canopy", action: #selector(openCanopy), keyEquivalent: "")
         if authViewModel.authState == .authenticated {
             menu.addItem(withTitle: "Open Main View", action: #selector(openConversations), keyEquivalent: "")
+
+            menu.addItem(.separator())
+
+            let providerItem = NSMenuItem(title: "AI Provider", action: nil, keyEquivalent: "")
+            let providerMenu = NSMenu()
+            let current = AIProviderStore.shared.chatProvider.rawValue
+
+            let options: [(title: String, raw: String)] = [
+                ("Gemini 2.5 Flash",   "google:gemini-2.5-flash"),
+                ("Gemini 2.5 Pro",     "google:gemini-2.5-pro"),
+                ("Gemini 2.0 Flash",   "google:gemini-2.0-flash"),
+                ("Claude Sonnet 4.6",  "anthropic:claude-sonnet-4-6"),
+                ("Claude Opus 4.7",    "anthropic:claude-opus-4-7"),
+                ("Claude Haiku 4.5",   "anthropic:claude-haiku-4-5-20251001"),
+                ("GPT-4o",             "openai:gpt-4o"),
+                ("GPT-4o Mini",        "openai:gpt-4o-mini"),
+            ]
+
+            for opt in options {
+                let item = NSMenuItem(title: opt.title, action: #selector(selectProvider(_:)), keyEquivalent: "")
+                item.representedObject = opt.raw
+                item.state = opt.raw == current ? .on : .off
+                providerMenu.addItem(item)
+            }
+
+            providerItem.submenu = providerMenu
+            menu.addItem(providerItem)
+
+            menu.addItem(.separator())
             menu.addItem(withTitle: "Log Out", action: #selector(logOut), keyEquivalent: "")
         }
         menu.addItem(.separator())
         menu.addItem(withTitle: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         return menu
+    }
+
+    @objc private func selectProvider(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String else { return }
+        DispatchQueue.main.async {
+            guard let provider = ChatProvider.from(rawValue: raw) else { return }
+            AIProviderStore.shared.setProvider(provider)
+        }
     }
 
     @objc private func openCanopy() {
