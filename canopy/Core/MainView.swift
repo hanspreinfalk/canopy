@@ -633,7 +633,7 @@ struct MainView: View {
                     Image(systemName: "sparkles")
                         .font(.system(size: 11))
                         .foregroundColor(.accentColor)
-                    Text("Claude will use your connected apps when you chat.")
+                    Text("Claude and OpenAI will use your connected apps when you chat.")
                         .font(.system(size: 11))
                         .foregroundColor(.secondary)
                 }

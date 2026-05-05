@@ -101,10 +101,20 @@ final class ConnectorsViewModel: ObservableObject {
         guard let url = URL(string: "\(Self.baseURL)/composio/apps") else { return }
         do {
             let (data, _) = try await URLSession.shared.data(from: url)
+            // Show raw shape of first item before Swift decoding touches it
+            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let items = json["items"] as? [[String: Any]],
+               let first = items.first {
+                let slug = first["slug"] ?? "?"
+                let topLevelLogo = first["logo"] ?? "absent"
+                let meta = first["meta"] as? [String: Any]
+                let metaLogo = meta?["logo"] ?? "absent"
+                print("📦 first toolkit raw — slug=\(slug)  top-level logo=\(topLevelLogo)  meta.logo=\(metaLogo)")
+            }
             struct Resp: Decodable { let items: [ComposioApp] }
             apps = try JSONDecoder().decode(Resp.self, from: data).items
             let sample = apps.prefix(3).map { "\($0.slug): logo=\($0.logo ?? "nil")" }
-            print("📦 composio/apps loaded \(apps.count) apps, sample logos: \(sample)")
+            print("📦 composio/apps decoded \(apps.count) apps, logos: \(sample)")
         } catch {
             print("❌ ConnectorsViewModel.loadApps: \(error)")
         }

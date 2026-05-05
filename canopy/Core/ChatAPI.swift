@@ -68,7 +68,8 @@ enum ChatProvider {
     fileprivate var mcpPathComponent: String {
         switch self {
         case .anthropic: return "/chat/anthropic-mcp"
-        default: return pathComponent
+        case .openai:    return "/chat/openai-tools"
+        case .google:    return pathComponent
         }
     }
 

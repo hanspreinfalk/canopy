@@ -49,6 +49,7 @@ final class CanopyViewModel: ObservableObject {
     private var lastMessageSentAt: Date?
     private var historyLoadCancellable: AnyCancellable?
 
+    private var connectionsCancellable: AnyCancellable?
     private var sendTask: Task<Void, Never>?
     private var activeSession: (any CustomStreamingTranscriptionSession)?
     private var transcriptFallbackTask: Task<Void, Never>?
@@ -57,8 +58,20 @@ final class CanopyViewModel: ObservableObject {
     // MARK: - Helpers
 
     private static func mcpEntityId(for provider: ChatProvider) -> String? {
-        guard case .anthropic = provider else { return nil }
-        return ConnectorsViewModel.shared.userId
+        guard ConnectorsViewModel.shared.hasConnections else { return nil }
+        switch provider {
+        case .anthropic, .openai: return ConnectorsViewModel.shared.userId
+        case .google: return nil
+        }
+    }
+
+    private func rebuildChatAPI() {
+        let provider = AIProviderStore.shared.chatProvider
+        chatAPI = ChatAPI(
+            baseURL: CanopyViewModel.convexBaseURL,
+            provider: provider,
+            entityId: CanopyViewModel.mcpEntityId(for: provider)
+        )
     }
 
     // MARK: - Init
@@ -70,13 +83,12 @@ final class CanopyViewModel: ObservableObject {
         providerCancellable = AIProviderStore.shared.$chatProvider
             .dropFirst()
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] provider in
-                self?.chatAPI = ChatAPI(
-                    baseURL: CanopyViewModel.convexBaseURL,
-                    provider: provider,
-                    entityId: CanopyViewModel.mcpEntityId(for: provider)
-                )
-            }
+            .sink { [weak self] _ in self?.rebuildChatAPI() }
+
+        connectionsCancellable = ConnectorsViewModel.shared.$connections
+            .dropFirst()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.rebuildChatAPI() }
     }
 
     private func loadHistoryFromConvexIfNeeded() {
