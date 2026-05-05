@@ -9,6 +9,14 @@ import ConvexMobile
 import Foundation
 import Speech
 
+private struct RecentMessagesResult: Decodable {
+    struct Message: Decodable {
+        let role: String
+        let content: String
+    }
+    let messages: [Message]
+}
+
 @MainActor
 final class CanopyViewModel: ObservableObject {
     // MARK: - Published state
@@ -25,12 +33,17 @@ final class CanopyViewModel: ObservableObject {
     // MARK: - Private dependencies
 
     private static let convexBaseURL = "https://oceanic-opossum-563.convex.site"
+    private static let inactivityInterval: TimeInterval = 15 * 60
     private var chatAPI = ChatAPI(baseURL: CanopyViewModel.convexBaseURL, provider: AIProviderStore.shared.chatProvider)
     private var providerCancellable: AnyCancellable?
     private let ttsClient = ElevenLabsTTSClient(proxyURL: "https://oceanic-opossum-563.convex.site/tts")
     private let transcriptionProvider: any CustomTranscriptionProvider
     private let audioEngine = AudioCaptureEngine()
     private let fnKeyMonitor = FnKeyMonitor()
+
+    private var conversationHistory: [ChatMessage] = []
+    private var lastMessageSentAt: Date?
+    private var historyLoadCancellable: AnyCancellable?
 
     private var sendTask: Task<Void, Never>?
     private var activeSession: (any CustomStreamingTranscriptionSession)?
@@ -49,6 +62,26 @@ final class CanopyViewModel: ObservableObject {
             .sink { [weak self] provider in
                 self?.chatAPI = ChatAPI(baseURL: CanopyViewModel.convexBaseURL, provider: provider)
             }
+    }
+
+    private func loadHistoryFromConvexIfNeeded() {
+        guard historyLoadCancellable == nil else { return }
+        historyLoadCancellable = convex
+            .subscribe(to: "conversations:getRecentMessages", with: ["limit": 10.0] as [String: ConvexEncodable?])
+            .receive(on: DispatchQueue.main)
+            .first()
+            .sink(
+                receiveCompletion: { _ in },
+                receiveValue: { [weak self] (result: RecentMessagesResult) in
+                    guard let self else { return }
+                    self.conversationHistory = result.messages.map {
+                        ChatMessage(role: $0.role, content: $0.content)
+                    }
+                    if !self.conversationHistory.isEmpty {
+                        self.lastMessageSentAt = Date()
+                    }
+                }
+            )
     }
 
     // MARK: - fn key monitoring
@@ -91,7 +124,17 @@ final class CanopyViewModel: ObservableObject {
         }
         guard !messageText.isEmpty else { return }
 
+        loadHistoryFromConvexIfNeeded()
+
+        // Reset history if the session has been idle for 15 minutes
+        if let last = lastMessageSentAt, Date().timeIntervalSince(last) >= Self.inactivityInterval {
+            conversationHistory = []
+        }
+        lastMessageSentAt = Date()
+
         isSending = true
+
+        let historySnapshot = conversationHistory
 
         sendTask = Task {
             do {
@@ -104,7 +147,14 @@ final class CanopyViewModel: ObservableObject {
                     }
                 }
 
-                let fullText = try await chatAPI.sendMessage(messageText) { _ in }
+                let fullText = try await chatAPI.sendMessage(messageText, history: historySnapshot) { _ in }
+
+                conversationHistory.append(ChatMessage(role: "user", content: messageText))
+                conversationHistory.append(ChatMessage(role: "assistant", content: fullText))
+                // Keep only the last 10 exchanges (20 messages)
+                if conversationHistory.count > 20 {
+                    conversationHistory.removeFirst(conversationHistory.count - 20)
+                }
 
                 Task {
                     do {

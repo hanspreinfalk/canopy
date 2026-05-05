@@ -72,8 +72,13 @@ enum ChatProvider {
     }
 }
 
+struct ChatMessage {
+    let role: String   // "user" or "assistant"
+    let content: String
+}
+
 /// Generic streaming chat client that works with all three provider endpoints.
-/// All endpoints accept { "message": "...", "model": "..." } and return
+/// All endpoints accept { "message": "...", "model": "...", "history": [...] } and return
 /// normalized SSE:  data: {"text":"chunk"} … data: [DONE]
 final class ChatAPI {
     // One session shared across all ChatAPI instances.
@@ -117,13 +122,15 @@ final class ChatAPI {
     /// Returns the full response when the stream completes.
     func sendMessage(
         _ text: String,
+        history: [ChatMessage] = [],
         onTextChunk: @MainActor @Sendable (String) -> Void
     ) async throws -> String {
         var request = URLRequest(url: endpointURL)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
 
-        let body: [String: String] = ["message": text, "model": modelName]
+        let historyPayload = history.map { ["role": $0.role, "content": $0.content] }
+        let body: [String: Any] = ["message": text, "model": modelName, "history": historyPayload]
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
         let (byteStream, response) = try await Self.session.bytes(for: request)

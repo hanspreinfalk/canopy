@@ -25,6 +25,10 @@ final class AIProviderStore: ObservableObject {
         let raw = UserDefaults.standard.string(forKey: Self.defaultsKey) ?? ""
         chatProvider = ChatProvider.from(rawValue: raw) ?? .defaultGoogle
         ChatAPI.warmUp()
+    }
+
+    func connectToConvex() {
+        guard convexSub == nil else { return }
         subscribeToConvex()
     }
 

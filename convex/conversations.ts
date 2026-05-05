@@ -98,6 +98,43 @@ export const listConversations = query({
     },
 });
 
+export const getRecentMessages = query({
+    args: { limit: v.optional(v.number()) },
+    handler: async (ctx, args) => {
+        const user = await getUser(ctx);
+        const limit = Math.min(args.limit ?? 10, 20);
+
+        const conversation = await ctx.db
+            .query("conversations")
+            .withIndex("by_user_id", (q) => q.eq("userId", user._id))
+            .order("desc")
+            .first();
+
+        if (!conversation || Date.now() - conversation.lastMessageAt >= INACTIVITY_MS) {
+            return { messages: [] as Array<{ role: string; content: string }> };
+        }
+
+        const rows = await ctx.db
+            .query("messages")
+            .withIndex("by_conversation_id", (q) =>
+                q.eq("conversationId", conversation._id)
+            )
+            .order("desc")
+            .take(limit);
+
+        return {
+            messages: rows.reverse().map((m) => ({
+                role: m.role,
+                content:
+                    m.parts
+                        ?.filter((p: { type: string }) => p.type === "text")
+                        .map((p: { text?: string }) => p.text ?? "")
+                        .join("") ?? "",
+            })),
+        };
+    },
+});
+
 export const listMessages = query({
     args: {
         conversationId: v.id("conversations"),

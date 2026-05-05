@@ -11,7 +11,8 @@ type HttpRouter = ReturnType<typeof httpRouter>;
 // Each provider supplies an `extractText` function that knows how to pull
 // the text chunk out of its own event payload shape.
 
-type NormalizedChatRequest = { message: string; model?: string };
+type HistoryMessage = { role: "user" | "assistant"; content: string };
+type NormalizedChatRequest = { message: string; model?: string; history?: HistoryMessage[] };
 
 function transformToNormalizedSSE(
   reader: ReadableStreamDefaultReader<Uint8Array>,
@@ -67,11 +68,16 @@ function transformToNormalizedSSE(
 // ─── /chat/google ─────────────────────────────────────────────────────────────
 
 const handleGoogleChat = httpAction(async (_ctx, request) => {
-  const { message, model = "gemini-2.5-flash" } =
+  const { message, model = "gemini-2.5-flash", history = [] } =
     (await request.json()) as NormalizedChatRequest;
 
+  const historyContents = history.map((m) => ({
+    role: m.role === "assistant" ? "model" : "user",
+    parts: [{ text: m.content }],
+  }));
+
   const body = JSON.stringify({
-    contents: [{ role: "user", parts: [{ text: message }] }],
+    contents: [...historyContents, { role: "user", parts: [{ text: message }] }],
     generationConfig: { temperature: 0.7, maxOutputTokens: 1024 },
   });
 
@@ -103,14 +109,17 @@ const handleGoogleChat = httpAction(async (_ctx, request) => {
 // ─── /chat/anthropic ──────────────────────────────────────────────────────────
 
 const handleAnthropicChat = httpAction(async (_ctx, request) => {
-  const { message, model = "claude-sonnet-4-6" } =
+  const { message, model = "claude-sonnet-4-6", history = [] } =
     (await request.json()) as NormalizedChatRequest;
 
   const body = JSON.stringify({
     model,
     max_tokens: 1024,
     stream: true,
-    messages: [{ role: "user", content: message }],
+    messages: [
+      ...history.map((m) => ({ role: m.role, content: m.content })),
+      { role: "user", content: message },
+    ],
   });
 
   const response = await fetch("https://api.anthropic.com/v1/messages", {
@@ -146,13 +155,16 @@ const handleAnthropicChat = httpAction(async (_ctx, request) => {
 // ─── /chat/openai ─────────────────────────────────────────────────────────────
 
 const handleOpenAIChat = httpAction(async (_ctx, request) => {
-  const { message, model = "gpt-4o" } =
+  const { message, model = "gpt-4o", history = [] } =
     (await request.json()) as NormalizedChatRequest;
 
   const body = JSON.stringify({
     model,
     stream: true,
-    messages: [{ role: "user", content: message }],
+    messages: [
+      ...history.map((m) => ({ role: m.role, content: m.content })),
+      { role: "user", content: message },
+    ],
   });
 
   const response = await fetch("https://api.openai.com/v1/chat/completions", {

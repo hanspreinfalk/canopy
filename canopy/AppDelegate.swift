@@ -46,6 +46,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             pillWindow?.orderOut(nil)
             onboardingWindow?.makeKeyAndOrderFront(nil)
         case .authenticated:
+            AIProviderStore.shared.connectToConvex()
             onboardingWindow?.orderOut(nil)
             pillWindow?.makeKeyAndOrderFront(nil)
             pillWindow?.makeKey()
