@@ -965,10 +965,7 @@ private struct ConnectorCard: View {
         )
         .overlay(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(
-                    isConnected ? Color.accentColor.opacity(0.4) : Color.primary.opacity(0.07),
-                    lineWidth: isConnected ? 1 : 0.5
-                )
+                .strokeBorder(Color.primary.opacity(0.07), lineWidth: 0.5)
         )
         .shadow(color: Color.black.opacity(isHovered ? 0.08 : 0.03), radius: isHovered ? 8 : 4, x: 0, y: 2)
         .onHover { isHovered = $0 }
@@ -1036,25 +1033,19 @@ private struct ConnectorCard: View {
             }
             .frame(maxWidth: .infinity)
         } else if isConnected {
-            HStack(spacing: 0) {
-                HStack(spacing: 5) {
-                    Circle()
-                        .fill(Color.green)
-                        .frame(width: 6, height: 6)
-                    Text("Active")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundColor(.green)
-                }
-                Spacer(minLength: 0)
-                Button(action: onDisconnect) {
-                    Text("Remove")
-                        .font(.system(size: 11))
-                        .foregroundColor(.secondary)
-                }
-                .buttonStyle(.borderless)
-                .help("Disconnect this app")
+            Button(action: onDisconnect) {
+                Text("Connected")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(.white)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 5)
+                    .background(
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .fill(Color(red: 0.13, green: 0.50, blue: 0.22))
+                    )
             }
-            .frame(maxWidth: .infinity)
+            .buttonStyle(.plain)
+            .help("Click to disconnect")
         } else {
             Button(action: onConnect) {
                 Text("Connect")

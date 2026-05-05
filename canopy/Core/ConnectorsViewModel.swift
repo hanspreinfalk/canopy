@@ -101,11 +101,10 @@ final class ConnectorsViewModel: ObservableObject {
         guard let url = URL(string: "\(Self.baseURL)/composio/apps") else { return }
         do {
             let (data, _) = try await URLSession.shared.data(from: url)
-            if let raw = String(data: data, encoding: .utf8) {
-                print("📦 composio/apps: \(raw.prefix(300))")
-            }
             struct Resp: Decodable { let items: [ComposioApp] }
             apps = try JSONDecoder().decode(Resp.self, from: data).items
+            let sample = apps.prefix(3).map { "\($0.slug): logo=\($0.logo ?? "nil")" }
+            print("📦 composio/apps loaded \(apps.count) apps, sample logos: \(sample)")
         } catch {
             print("❌ ConnectorsViewModel.loadApps: \(error)")
         }
