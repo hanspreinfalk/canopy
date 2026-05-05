@@ -36,6 +36,8 @@ struct MainView: View {
     @State private var sidebarVisible: Bool = true
     @State private var selfSummaryText: String = ""
     @State private var selfSummaryLoaded = false
+    @ObservedObject private var connectorsVM = ConnectorsViewModel.shared
+    @State private var connectorSearchText = ""
 
     var body: some View {
         ZStack(alignment: .topLeading) {
@@ -519,24 +521,140 @@ struct MainView: View {
 
     // MARK: - Connectors panel
 
+    private var filteredConnectorApps: [ComposioApp] {
+        guard !connectorSearchText.isEmpty else { return connectorsVM.apps }
+        return connectorsVM.apps.filter {
+            $0.name.localizedCaseInsensitiveContains(connectorSearchText) ||
+            $0.slug.localizedCaseInsensitiveContains(connectorSearchText)
+        }
+    }
+
     private var connectorsPanel: some View {
         VStack(spacing: 0) {
-            panelToolbar(title: "Connectors")
+            panelToolbar(title: "Connectors") {
+                if connectorsVM.isLoading {
+                    ProgressView()
+                        .controlSize(.small)
+                        .frame(width: 28, height: 28)
+                } else {
+                    ToolbarIconButton(icon: "arrow.clockwise") {
+                        Task { await connectorsVM.refreshConnections() }
+                    }
+                    .help("Refresh connections")
+                }
+            }
 
-            Spacer()
-            VStack(spacing: 12) {
-                Image(systemName: "point.3.connected.trianglepath.dotted")
-                    .font(.system(size: 36, weight: .light))
+            Divider().opacity(0.5)
+
+            // Search bar
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass")
                     .foregroundColor(.secondary)
-                Text("No connectors yet")
-                    .font(.system(size: 15, weight: .medium))
-                Text("Connect apps and services to extend Canopy's capabilities.")
+                    .font(.system(size: 13))
+                TextField("Search connectors…", text: $connectorSearchText)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 13))
+                if !connectorSearchText.isEmpty {
+                    Button { connectorSearchText = "" } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundColor(.secondary)
+                            .font(.system(size: 12))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .background(
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .fill(Color.primary.opacity(0.05))
+            )
+            .padding(.horizontal, 20)
+            .padding(.top, 14)
+            .padding(.bottom, 10)
+
+            if connectorsVM.apps.isEmpty && !connectorsVM.isLoading {
+                Spacer()
+                VStack(spacing: 12) {
+                    Image(systemName: "point.3.connected.trianglepath.dotted")
+                        .font(.system(size: 36, weight: .light))
+                        .foregroundColor(.secondary)
+                    Text("No connectors available")
+                        .font(.system(size: 15, weight: .medium))
+                    Text("Check that your Composio API key is configured.")
+                        .font(.system(size: 13))
+                        .foregroundColor(.secondary)
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: 260)
+                }
+                Spacer()
+            } else if filteredConnectorApps.isEmpty {
+                Spacer()
+                Text("No results for '\(connectorSearchText)'")
                     .font(.system(size: 13))
                     .foregroundColor(.secondary)
-                    .multilineTextAlignment(.center)
-                    .frame(maxWidth: 260)
+                Spacer()
+            } else {
+                ScrollView {
+                    LazyVGrid(
+                        columns: [GridItem(.adaptive(minimum: 160, maximum: 200), spacing: 12)],
+                        spacing: 12
+                    ) {
+                        ForEach(filteredConnectorApps) { app in
+                            ConnectorCard(
+                                app: app,
+                                isConnected: connectorsVM.connectedAppSlugs.contains(app.slug.lowercased()),
+                                isConnecting: connectorsVM.connectingAppKey == app.slug
+                            ) {
+                                Task {
+                                    if let url = await connectorsVM.initiateConnection(appSlug: app.slug) {
+                                        NSWorkspace.shared.open(url)
+                                    }
+                                }
+                            } onDisconnect: {
+                                Task {
+                                    if let conn = connectorsVM.connections.first(where: {
+                                        $0.appSlug.lowercased() == app.slug.lowercased()
+                                    }) {
+                                        await connectorsVM.disconnect(connection: conn)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 16)
+                    .frame(maxWidth: .infinity)
+                }
             }
-            Spacer()
+
+            if connectorsVM.hasConnections {
+                HStack(spacing: 6) {
+                    Image(systemName: "sparkles")
+                        .font(.system(size: 11))
+                        .foregroundColor(.accentColor)
+                    Text("Claude will use your connected apps when you chat.")
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary)
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+                .frame(maxWidth: .infinity)
+                .background(Color.accentColor.opacity(0.05))
+            }
+        }
+        .task {
+            if connectorsVM.apps.isEmpty {
+                await connectorsVM.load()
+            }
+        }
+        .alert("Error", isPresented: Binding(
+            get: { connectorsVM.errorMessage != nil },
+            set: { if !$0 { connectorsVM.errorMessage = nil } }
+        )) {
+            Button("OK") { connectorsVM.errorMessage = nil }
+        } message: {
+            Text(connectorsVM.errorMessage ?? "")
         }
     }
 
@@ -797,6 +915,160 @@ private struct SidebarRow: View {
         if isSelected { return Color.primary.opacity(0.08) }
         if isHovered  { return Color.primary.opacity(0.04) }
         return .clear
+    }
+}
+
+// MARK: - Connector card
+
+private struct ConnectorCard: View {
+    let app: ComposioApp
+    let isConnected: Bool
+    let isConnecting: Bool
+    let onConnect: () -> Void
+    let onDisconnect: () -> Void
+
+    @State private var isHovered = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top) {
+                appIcon
+                Spacer()
+                if isConnected {
+                    connectedBadge
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(app.name.isEmpty ? app.slug.capitalized : app.name)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(.primary)
+                    .lineLimit(1)
+                if let desc = app.description, !desc.isEmpty {
+                    Text(desc)
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            Spacer(minLength: 0)
+
+            actionButton
+        }
+        .padding(14)
+        .frame(height: 160)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color(NSColor.controlBackgroundColor))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(
+                    isConnected ? Color.accentColor.opacity(0.4) : Color.primary.opacity(0.07),
+                    lineWidth: isConnected ? 1 : 0.5
+                )
+        )
+        .shadow(color: Color.black.opacity(isHovered ? 0.08 : 0.03), radius: isHovered ? 8 : 4, x: 0, y: 2)
+        .onHover { isHovered = $0 }
+    }
+
+    private var appIcon: some View {
+        Group {
+            if let logoStr = app.logo, let url = URL(string: logoStr) {
+                AsyncImage(url: url) { phase in
+                    switch phase {
+                    case .success(let image):
+                        image
+                            .resizable()
+                            .scaledToFit()
+                            .frame(width: 40, height: 40)
+                    default:
+                        fallbackIcon
+                    }
+                }
+                .frame(width: 40, height: 40)
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            } else {
+                fallbackIcon
+            }
+        }
+    }
+
+    private var fallbackIcon: some View {
+        RoundedRectangle(cornerRadius: 8, style: .continuous)
+            .fill(Color.primary.opacity(0.08))
+            .frame(width: 40, height: 40)
+            .overlay(
+                Text(String((app.name.isEmpty ? app.slug : app.name).prefix(1)).uppercased())
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundColor(.secondary)
+            )
+    }
+
+    private var connectedBadge: some View {
+        HStack(spacing: 3) {
+            Circle()
+                .fill(Color.green)
+                .frame(width: 5, height: 5)
+            Text("Connected")
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundColor(.green)
+        }
+        .padding(.horizontal, 6)
+        .padding(.vertical, 3)
+        .background(
+            RoundedRectangle(cornerRadius: 5, style: .continuous)
+                .fill(Color.green.opacity(0.1))
+        )
+    }
+
+    @ViewBuilder
+    private var actionButton: some View {
+        if isConnecting {
+            HStack(spacing: 6) {
+                ProgressView()
+                    .controlSize(.mini)
+                Text("Connecting…")
+                    .font(.system(size: 12))
+                    .foregroundColor(.secondary)
+            }
+            .frame(maxWidth: .infinity)
+        } else if isConnected {
+            HStack(spacing: 0) {
+                HStack(spacing: 5) {
+                    Circle()
+                        .fill(Color.green)
+                        .frame(width: 6, height: 6)
+                    Text("Active")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(.green)
+                }
+                Spacer(minLength: 0)
+                Button(action: onDisconnect) {
+                    Text("Remove")
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary)
+                }
+                .buttonStyle(.borderless)
+                .help("Disconnect this app")
+            }
+            .frame(maxWidth: .infinity)
+        } else {
+            Button(action: onConnect) {
+                Text("Connect")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(.white)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 5)
+                    .background(
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .fill(Color.black)
+                    )
+            }
+            .buttonStyle(.plain)
+        }
     }
 }
 

@@ -34,7 +34,11 @@ final class CanopyViewModel: ObservableObject {
 
     private static let convexBaseURL = "https://oceanic-opossum-563.convex.site"
     private static let inactivityInterval: TimeInterval = 15 * 60
-    private var chatAPI = ChatAPI(baseURL: CanopyViewModel.convexBaseURL, provider: AIProviderStore.shared.chatProvider)
+    private var chatAPI = ChatAPI(
+        baseURL: CanopyViewModel.convexBaseURL,
+        provider: AIProviderStore.shared.chatProvider,
+        entityId: CanopyViewModel.mcpEntityId(for: AIProviderStore.shared.chatProvider)
+    )
     private var providerCancellable: AnyCancellable?
     private let ttsClient = ElevenLabsTTSClient(proxyURL: "https://oceanic-opossum-563.convex.site/tts")
     private let transcriptionProvider: any CustomTranscriptionProvider
@@ -50,6 +54,13 @@ final class CanopyViewModel: ObservableObject {
     private var transcriptFallbackTask: Task<Void, Never>?
     private var transcriptDelivered = false
 
+    // MARK: - Helpers
+
+    private static func mcpEntityId(for provider: ChatProvider) -> String? {
+        guard case .anthropic = provider else { return nil }
+        return ConnectorsViewModel.shared.userId
+    }
+
     // MARK: - Init
 
     init() {
@@ -60,7 +71,11 @@ final class CanopyViewModel: ObservableObject {
             .dropFirst()
             .receive(on: DispatchQueue.main)
             .sink { [weak self] provider in
-                self?.chatAPI = ChatAPI(baseURL: CanopyViewModel.convexBaseURL, provider: provider)
+                self?.chatAPI = ChatAPI(
+                    baseURL: CanopyViewModel.convexBaseURL,
+                    provider: provider,
+                    entityId: CanopyViewModel.mcpEntityId(for: provider)
+                )
             }
     }
 

@@ -65,6 +65,13 @@ enum ChatProvider {
         }
     }
 
+    fileprivate var mcpPathComponent: String {
+        switch self {
+        case .anthropic: return "/chat/anthropic-mcp"
+        default: return pathComponent
+        }
+    }
+
     var modelName: String {
         switch self {
         case .google(let m), .anthropic(let m), .openai(let m): return m
@@ -111,10 +118,15 @@ final class ChatAPI {
 
     private let endpointURL: URL
     private let modelName: String
+    // Non-nil when Anthropic MCP mode is active; sent as `entityId` in the request body.
+    private let entityId: String?
 
-    init(baseURL: String, provider: ChatProvider) {
-        self.endpointURL = URL(string: baseURL + provider.pathComponent)!
+    init(baseURL: String, provider: ChatProvider, entityId: String? = nil) {
+        let useMCP = entityId != nil
+        let path = useMCP ? provider.mcpPathComponent : provider.pathComponent
+        self.endpointURL = URL(string: baseURL + path)!
         self.modelName = provider.modelName
+        self.entityId = entityId
     }
 
     /// Streams a chat message through the selected provider endpoint.
@@ -130,7 +142,8 @@ final class ChatAPI {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
 
         let historyPayload = history.map { ["role": $0.role, "content": $0.content] }
-        let body: [String: Any] = ["message": text, "model": modelName, "history": historyPayload]
+        var body: [String: Any] = ["message": text, "model": modelName, "history": historyPayload]
+        if let entityId { body["entityId"] = entityId }
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
         let (byteStream, response) = try await Self.session.bytes(for: request)
