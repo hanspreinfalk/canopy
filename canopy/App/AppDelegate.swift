@@ -181,14 +181,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func makeOnboardingWindow() -> NSWindow {
         let window = NSWindow(
-            contentRect: NSRect(origin: .zero, size: CGSize(width: 420, height: 340)),
+            contentRect: NSRect(origin: .zero, size: CGSize(width: 440, height: 380)),
             styleMask: [.titled, .closable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
-        window.backgroundColor = NSColor(red: 0.08, green: 0.08, blue: 0.08, alpha: 1.0)
+        window.backgroundColor = NSColor.windowBackgroundColor
         window.isMovableByWindowBackground = true
 
         window.contentView = NSHostingView(rootView: SignInView())
