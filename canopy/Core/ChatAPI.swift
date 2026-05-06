@@ -283,6 +283,13 @@ struct ChatMessage: Sendable {
     let content: String
 }
 
+/// Token accounting for one assistant turn (aggregated across tool loops), from the backend SSE `usage` event.
+struct ChatUsageSummary: Sendable {
+    let tokensIn: Int
+    let tokensOut: Int
+    let model: String
+}
+
 /// One event in a streaming chat response.
 /// The backend emits these as SSE; the order matters for UI rendering.
 enum ChatStreamEvent: Sendable {
@@ -298,6 +305,8 @@ enum ChatStreamEvent: Sendable {
     case toolEnd(name: String, id: String?, ok: Bool)
     /// Server-reported error during the stream. The connection ends after this.
     case error(message: String, detail: String?)
+    /// Emitted once before `[DONE]` on MCP routes so the client can persist usage on the assistant message.
+    case usage(ChatUsageSummary)
 }
 
 enum ChatAPIError: Error, LocalizedError {
@@ -459,6 +468,9 @@ final class ChatAPI {
     private let modelName: String
     private let entityId: String?
 
+    /// Model id sent in the request body (e.g. `claude-sonnet-4-6`). Use when persisting metadata if the stream has no `usage` event.
+    var requestedModelId: String { modelName }
+
     /// - Parameters:
     ///   - baseURL: e.g. "https://oceanic-opossum-563.convex.site"
     ///   - provider: which model + provider to call.
@@ -524,7 +536,7 @@ final class ChatAPI {
                 accumulated += chunk
                 let snapshot = accumulated
                 await onTextChunk(snapshot)
-            case .toolStart, .toolEnd:
+            case .toolStart, .toolEnd, .usage:
                 if let onTool { await onTool(event) }
             case .error(let msg, let detail):
                 throw ChatAPIError.httpError(
@@ -666,6 +678,16 @@ final class ChatAPI {
             if let errorMsg = json["error"] as? String {
                 let detail = json["detail"] as? String
                 return .event(.error(message: errorMsg, detail: detail))
+            }
+            if let usage = json["usage"] as? [String: Any] {
+                let tin: Int = (usage["tokensIn"] as? Int)
+                    ?? (usage["tokensIn"] as? Double).map { Int($0) }
+                    ?? 0
+                let tout: Int = (usage["tokensOut"] as? Int)
+                    ?? (usage["tokensOut"] as? Double).map { Int($0) }
+                    ?? 0
+                let modelStr = (usage["model"] as? String) ?? ""
+                return .event(.usage(ChatUsageSummary(tokensIn: tin, tokensOut: tout, model: modelStr)))
             }
         }
         return nil

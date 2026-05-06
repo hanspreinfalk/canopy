@@ -181,6 +181,7 @@ final class CanopyViewModel: ObservableObject {
 
         sendTask = Task {
             var fullText = ""
+            var streamUsage: ChatUsageSummary?
             do {
                 Task {
                     do {
@@ -197,6 +198,8 @@ final class CanopyViewModel: ObservableObject {
                     case .text(let chunk):
                         fullText += chunk
                         voice.handleTextChunk(fullText)
+                    case .usage(let summary):
+                        streamUsage = summary
                     case .toolStart(let name, _, let inputJSON):
                         // Flush whatever preamble we have so it plays
                         // DURING the tool call, not after.
@@ -225,7 +228,19 @@ final class CanopyViewModel: ObservableObject {
 
                     Task {
                         do {
-                            let args: [String: ConvexEncodable?] = ["role": "assistant", "content": fullText]
+                            let modelForRow = streamUsage?.model.trimmingCharacters(in: .whitespacesAndNewlines)
+                            let resolvedModel: String? = (modelForRow?.isEmpty == false)
+                                ? modelForRow
+                                : chatAPI.requestedModelId
+                            var args: [String: ConvexEncodable?] = [
+                                "role": "assistant",
+                                "content": fullText,
+                                "model": resolvedModel,
+                            ]
+                            if let u = streamUsage {
+                                args["tokensIn"] = Double(u.tokensIn)
+                                args["tokensOut"] = Double(u.tokensOut)
+                            }
                             try await convex.mutation("conversations:saveMessage", with: args)
                         } catch {
                             print("❌ saveMessage(assistant) failed: \(error)")

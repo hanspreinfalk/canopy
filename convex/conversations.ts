@@ -49,6 +49,9 @@ export const saveMessage = mutation({
     args: {
         role: v.union(v.literal("user"), v.literal("assistant")),
         content: v.string(),
+        tokensIn: v.optional(v.number()),
+        tokensOut: v.optional(v.number()),
+        model: v.optional(v.string()),
     },
     handler: async (ctx, args) => {
         const identity = await ctx.auth.getUserIdentity();
@@ -75,6 +78,11 @@ export const saveMessage = mutation({
             conversationId,
             role: args.role,
             parts: [{ type: "text", text: args.content }],
+            ...(args.tokensIn !== undefined ? { tokensIn: args.tokensIn } : {}),
+            ...(args.tokensOut !== undefined ? { tokensOut: args.tokensOut } : {}),
+            ...(args.model !== undefined && args.model.length > 0
+                ? { model: args.model }
+                : {}),
         });
 
         const conv = await ctx.db.get(conversationId);

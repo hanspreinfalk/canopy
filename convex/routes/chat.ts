@@ -439,6 +439,21 @@ function emitEvent(
   controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
 }
 
+/** Final SSE metadata for persisting token usage (client saves with assistant message). */
+function emitUsageSummary(
+  controller: ReadableStreamDefaultController<Uint8Array>,
+  encoder: TextEncoder,
+  summary: { tokensIn: number; tokensOut: number; model: string }
+) {
+  emitEvent(controller, encoder, {
+    usage: {
+      tokensIn: summary.tokensIn,
+      tokensOut: summary.tokensOut,
+      model: summary.model,
+    },
+  });
+}
+
 // ─── /chat/google-mcp (Gemini + Composio tools) ───────────────────────────────
 
 type GeminiContent = { role: string; parts: Array<Record<string, unknown>> };
@@ -486,7 +501,10 @@ async function runGeminiTurnStreaming(
   controller: ReadableStreamDefaultController<Uint8Array>,
   encoder: TextEncoder,
   userTimeZone?: string
-): Promise<{ functionCallsRaw: Record<string, unknown>[] }> {
+): Promise<{
+  functionCallsRaw: Record<string, unknown>[];
+  usage: { tokensIn: number; tokensOut: number };
+}> {
   const body: Record<string, unknown> = {
     systemInstruction: { parts: [{ text: buildSystemPrompt({ userTimeZone }) }] },
     contents,
@@ -512,6 +530,8 @@ async function runGeminiTurnStreaming(
   let buf = "";
   let textSnapshot = "";
   let lastCandidate: Record<string, unknown> | null = null;
+  let lastPromptTokens = 0;
+  let lastCandidatesTokens = 0;
 
   while (true) {
     const { done, value } = await reader.read();
@@ -534,6 +554,14 @@ async function runGeminiTurnStreaming(
       const err = ev["error"] as Record<string, unknown> | undefined;
       if (err) {
         throw new Error(`Gemini stream error: ${JSON.stringify(err)}`);
+      }
+
+      const um = ev["usageMetadata"] as Record<string, unknown> | undefined;
+      if (um) {
+        const p = um["promptTokenCount"];
+        const c = um["candidatesTokenCount"];
+        if (typeof p === "number") lastPromptTokens = p;
+        if (typeof c === "number") lastCandidatesTokens = c;
       }
 
       const candidates = ev["candidates"] as Array<Record<string, unknown>> | undefined;
@@ -562,7 +590,10 @@ async function runGeminiTurnStreaming(
     }
   }
 
-  return { functionCallsRaw: extractGeminiFunctionCallsFromCandidate(lastCandidate) };
+  return {
+    functionCallsRaw: extractGeminiFunctionCallsFromCandidate(lastCandidate),
+    usage: { tokensIn: lastPromptTokens, tokensOut: lastCandidatesTokens },
+  };
 }
 
 const handleGoogleMCPChat = httpAction(async (_ctx, request) => {
@@ -593,9 +624,11 @@ const handleGoogleMCPChat = httpAction(async (_ctx, request) => {
         ];
 
         const MAX_TURNS = 8;
+        let totalTokensIn = 0;
+        let totalTokensOut = 0;
 
         for (let t = 0; t < MAX_TURNS; t++) {
-          const { functionCallsRaw } = await runGeminiTurnStreaming(
+          const { functionCallsRaw, usage } = await runGeminiTurnStreaming(
             model,
             contents,
             geminiTools.length > 0 ? geminiTools : null,
@@ -603,6 +636,8 @@ const handleGoogleMCPChat = httpAction(async (_ctx, request) => {
             encoder,
             userTz
           );
+          totalTokensIn += usage.tokensIn;
+          totalTokensOut += usage.tokensOut;
 
           if (functionCallsRaw.length === 0) break;
 
@@ -657,6 +692,11 @@ const handleGoogleMCPChat = httpAction(async (_ctx, request) => {
           });
         }
 
+        emitUsageSummary(controller, encoder, {
+          tokensIn: totalTokensIn,
+          tokensOut: totalTokensOut,
+          model,
+        });
         controller.enqueue(encoder.encode("data: [DONE]\n\n"));
         controller.close();
       } catch (err) {
@@ -691,7 +731,11 @@ async function runAnthropicTurnStreaming(
   reqBody: Record<string, unknown>,
   controller: ReadableStreamDefaultController<Uint8Array>,
   encoder: TextEncoder
-): Promise<{ allContent: AnthropicContentBlock[]; stopReason: string }> {
+): Promise<{
+  allContent: AnthropicContentBlock[];
+  stopReason: string;
+  usage: { tokensIn: number; tokensOut: number };
+}> {
   const response = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: {
@@ -716,6 +760,8 @@ async function runAnthropicTurnStreaming(
     | { type: "tool_use"; id: string; name: string; inputJson: string };
   const blocks: RawBlock[] = [];
   let stopReason = "end_turn";
+  let inputTokens = 0;
+  let outputTokens = 0;
 
   while (true) {
     const { done, value } = await reader.read();
@@ -730,6 +776,13 @@ async function runAnthropicTurnStreaming(
       if (payload === "[DONE]") continue;
       let ev: Record<string, unknown>;
       try { ev = JSON.parse(payload); } catch { continue; }
+
+      if (ev.type === "message_start") {
+        const msg = ev.message as Record<string, unknown> | undefined;
+        const u = msg?.usage as Record<string, unknown> | undefined;
+        const tin = u?.input_tokens;
+        if (typeof tin === "number") inputTokens = tin;
+      }
 
       if (ev.type === "content_block_start") {
         const idx = ev.index as number;
@@ -751,6 +804,9 @@ async function runAnthropicTurnStreaming(
       } else if (ev.type === "message_delta") {
         const d = ev.delta as Record<string, unknown>;
         stopReason = (d.stop_reason as string) ?? "end_turn";
+        const u = ev.usage as Record<string, unknown> | undefined;
+        const tout = u?.output_tokens;
+        if (typeof tout === "number") outputTokens = tout;
       }
     }
   }
@@ -765,7 +821,7 @@ async function runAnthropicTurnStreaming(
     };
   });
 
-  return { allContent, stopReason };
+  return { allContent, stopReason, usage: { tokensIn: inputTokens, tokensOut: outputTokens } };
 }
 
 // Runs one OpenAI turn with stream:true, forwarding text deltas immediately.
@@ -774,14 +830,23 @@ async function runOpenAITurnStreaming(
   reqBody: Record<string, unknown>,
   controller: ReadableStreamDefaultController<Uint8Array>,
   encoder: TextEncoder
-): Promise<{ assistantContent: string | null; toolCalls: OpenAIToolCall[]; finishReason: string }> {
+): Promise<{
+  assistantContent: string | null;
+  toolCalls: OpenAIToolCall[];
+  finishReason: string;
+  usage: { tokensIn: number; tokensOut: number };
+}> {
   const response = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
     headers: {
       Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
       "content-type": "application/json",
     },
-    body: JSON.stringify({ ...reqBody, stream: true }),
+    body: JSON.stringify({
+      ...reqBody,
+      stream: true,
+      stream_options: { include_usage: true },
+    }),
   });
 
   if (!response.ok || !response.body) {
@@ -796,6 +861,8 @@ async function runOpenAITurnStreaming(
   let assistantContent = "";
   const toolCallsMap: Record<number, { id: string; name: string; argumentsJson: string }> = {};
   let finishReason = "stop";
+  let promptTokens = 0;
+  let completionTokens = 0;
 
   while (true) {
     const { done, value } = await reader.read();
@@ -810,6 +877,14 @@ async function runOpenAITurnStreaming(
       if (payload === "[DONE]") continue;
       let ev: Record<string, unknown>;
       try { ev = JSON.parse(payload); } catch { continue; }
+
+      const usage = ev.usage as Record<string, unknown> | undefined;
+      if (usage) {
+        const pt = usage.prompt_tokens;
+        const ct = usage.completion_tokens;
+        if (typeof pt === "number") promptTokens = pt;
+        if (typeof ct === "number") completionTokens = ct;
+      }
 
       const choices = ev.choices as Array<Record<string, unknown>> | undefined;
       if (!choices?.length) continue;
@@ -843,7 +918,12 @@ async function runOpenAITurnStreaming(
     function: { name: tc.name, arguments: tc.argumentsJson },
   }));
 
-  return { assistantContent: assistantContent || null, toolCalls, finishReason };
+  return {
+    assistantContent: assistantContent || null,
+    toolCalls,
+    finishReason,
+    usage: { tokensIn: promptTokens, tokensOut: completionTokens },
+  };
 }
 
 const handleAnthropicMCPChat = httpAction(async (_ctx, request) => {
@@ -912,6 +992,8 @@ const handleAnthropicMCPChat = httpAction(async (_ctx, request) => {
         ];
 
         const MAX_TURNS = 8;
+        let totalTokensIn = 0;
+        let totalTokensOut = 0;
 
         for (let turn = 0; turn < MAX_TURNS; turn++) {
           const reqBody: Record<string, unknown> = {
@@ -922,7 +1004,13 @@ const handleAnthropicMCPChat = httpAction(async (_ctx, request) => {
           };
           if (anthropicTools.length > 0) reqBody.tools = anthropicTools;
 
-          const { allContent, stopReason } = await runAnthropicTurnStreaming(reqBody, controller, encoder);
+          const { allContent, stopReason, usage } = await runAnthropicTurnStreaming(
+            reqBody,
+            controller,
+            encoder
+          );
+          totalTokensIn += usage.tokensIn;
+          totalTokensOut += usage.tokensOut;
 
           if (stopReason !== "tool_use") break;
 
@@ -967,6 +1055,11 @@ const handleAnthropicMCPChat = httpAction(async (_ctx, request) => {
           messages.push({ role: "user", content: toolResults });
         }
 
+        emitUsageSummary(controller, encoder, {
+          tokensIn: totalTokensIn,
+          tokensOut: totalTokensOut,
+          model,
+        });
         controller.enqueue(encoder.encode("data: [DONE]\n\n"));
         controller.close();
       } catch (err) {
@@ -1043,12 +1136,20 @@ const handleOpenAIToolsChat = httpAction(async (_ctx, request) => {
         ];
 
         const MAX_TURNS = 8;
+        let totalTokensIn = 0;
+        let totalTokensOut = 0;
 
         for (let turn = 0; turn < MAX_TURNS; turn++) {
           const reqBody: Record<string, unknown> = { model, messages };
           if (openaiTools.length > 0) reqBody.tools = openaiTools;
 
-          const { assistantContent, toolCalls, finishReason } = await runOpenAITurnStreaming(reqBody, controller, encoder);
+          const { assistantContent, toolCalls, finishReason, usage } = await runOpenAITurnStreaming(
+            reqBody,
+            controller,
+            encoder
+          );
+          totalTokensIn += usage.tokensIn;
+          totalTokensOut += usage.tokensOut;
 
           if (finishReason !== "tool_calls") break;
 
@@ -1085,6 +1186,11 @@ const handleOpenAIToolsChat = httpAction(async (_ctx, request) => {
           messages.push(...toolResults);
         }
 
+        emitUsageSummary(controller, encoder, {
+          tokensIn: totalTokensIn,
+          tokensOut: totalTokensOut,
+          model,
+        });
         controller.enqueue(encoder.encode("data: [DONE]\n\n"));
         controller.close();
       } catch (err) {
