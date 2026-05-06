@@ -21,6 +21,7 @@ struct canopyApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
 
     init() {
+        Analytics.configure()
         let key = AppBundleConfiguration.stringValue(forKey: "CLERK_PUBLISHABLE_KEY") ?? ""
         Clerk.configure(
             publishableKey: key,

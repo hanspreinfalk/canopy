@@ -19,6 +19,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var authCancellable: AnyCancellable?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        Analytics.trackAppOpened()
         NSApp.setActivationPolicy(.regular)
         setupStatusItem()
         setupHotkey()

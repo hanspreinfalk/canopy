@@ -162,6 +162,8 @@ final class CanopyViewModel: ObservableObject {
         }
         guard !messageText.isEmpty else { return }
 
+        Analytics.trackUserMessageSent(transcript: messageText)
+
         loadHistoryFromConvexIfNeeded()
 
         // Reset history if the session has been idle for 15 minutes
@@ -205,12 +207,15 @@ final class CanopyViewModel: ObservableObject {
                     case .toolEnd:
                         voice.handleToolEnd()
                     case .error(let msg, let detail):
-                        print("❌ stream error: \(msg)\(detail.map { " — \($0)" } ?? "")")
+                        let detailStr = detail.map { " — \($0)" } ?? ""
+                        print("❌ stream error: \(msg)\(detailStr)")
+                        Analytics.trackResponseError(error: "\(msg)\(detailStr)")
                     }
                 }
                 voice.handleStreamEnd()
 
                 if !Task.isCancelled, !fullText.isEmpty {
+                    Analytics.trackAIResponseReceived(response: fullText)
                     conversationHistory.append(ChatMessage(role: "user", content: messageText))
                     conversationHistory.append(ChatMessage(role: "assistant", content: fullText))
                     // Keep only the last 10 exchanges (20 messages)
@@ -235,6 +240,7 @@ final class CanopyViewModel: ObservableObject {
                 // cancelled — voice.interrupt() was called by cancel()
             } catch {
                 print("❌ CanopyViewModel error: \(error)")
+                Analytics.trackResponseError(error: error.localizedDescription)
             }
             isSending = false
             isSpeaking = false
@@ -304,6 +310,7 @@ final class CanopyViewModel: ObservableObject {
                     Task { @MainActor [weak self] in self?.audioPowerLevel = power }
                 }
             )
+            Analytics.trackPushToTalkStarted()
         } catch {
             print("❌ Failed to start recording: \(error)")
             isRecording = false
@@ -312,6 +319,8 @@ final class CanopyViewModel: ObservableObject {
 
     func stopRecording() {
         guard isRecording else { return }
+
+        Analytics.trackPushToTalkReleased()
 
         audioEngine.stop()
         isRecording = false
@@ -442,6 +451,8 @@ final class CanopyViewModel: ObservableObject {
                 print("⚠️ take_screenshot: target out of display bounds — \(globalPoint) not in \(capture.displayFrame)")
                 return
             }
+
+            Analytics.trackElementPointed(elementLabel: label)
 
             GuideOverlayController.shared.showPointing(
                 toGlobalAppKit: globalPoint,

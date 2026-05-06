@@ -136,6 +136,7 @@ final class ChatVoiceController {
                 return
             } catch {
                 print("❌ TTS synthesis failed for: \(trimmed.prefix(40))… — \(error)")
+                Analytics.trackTTSError(error: error.localizedDescription)
                 return
             }
 

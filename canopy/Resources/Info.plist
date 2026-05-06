@@ -4,6 +4,8 @@
 <dict>
 	<key>CLERK_PUBLISHABLE_KEY</key>
 	<string>pk_test_bm9ybWFsLXRlcnJpZXItMzQuY2xlcmsuYWNjb3VudHMuZGV2JA</string>
+	<key>PostHogAPIKey</key>
+	<string>phc_rUH8RqwLaYPtSdmrQyTsQcnTLRebBiyvzx3SQ4p4Wi4w</string>
 	<key>NSScreenCaptureUsageDescription</key>
 	<string>Canopy captures your screen to point you to UI elements when you ask for help (e.g. "how do I turn on dark mode"). Screenshots are sent only to Canopy's backend and never stored.</string>
 </dict>
