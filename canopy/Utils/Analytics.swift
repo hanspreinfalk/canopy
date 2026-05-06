@@ -5,6 +5,7 @@
 //  Created by Hans Preinfalk on 5/3/26.
 //
 
+import ClerkKit
 import Foundation
 import PostHog
 
@@ -25,6 +26,51 @@ enum Analytics {
         #endif
         PostHogSDK.shared.setup(config)
         isSetup = true
+    }
+
+    // MARK: - Identity
+
+    /// Associates PostHog events with the signed-in Clerk user (`distinct_id` = Clerk user id,
+    /// person properties `email` and `name` when available).
+    static func identifyFromClerk() {
+        guard isSetup else { return }
+        guard let user = Clerk.shared.user else { return }
+
+        let distinctId = user.id
+        guard !distinctId.isEmpty else { return }
+
+        var props: [String: Any] = [:]
+        if let email = user.primaryEmailAddress?.emailAddress?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+            !email.isEmpty {
+            props["email"] = email
+        }
+        if let name = displayName(for: user) {
+            props["name"] = name
+        }
+
+        PostHogSDK.shared.identify(distinctId, userProperties: props.isEmpty ? nil : props)
+    }
+
+    /// Prefer `"First Last"` from Clerk, then username if no name parts are set.
+    private static func displayName(for user: User) -> String? {
+        let first = user.firstName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let last = user.lastName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let combined = [first, last].filter { !$0.isEmpty }.joined(separator: " ")
+        if !combined.isEmpty { return combined }
+
+        if let username = user.username?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !username.isEmpty {
+            return username
+        }
+
+        return nil
+    }
+
+    /// Clears identity when the user signs out (returns to anonymous tracking).
+    static func resetIdentity() {
+        guard isSetup else { return }
+        PostHogSDK.shared.reset()
     }
 
     private static func capture(_ event: String, properties: [String: Any]? = nil) {

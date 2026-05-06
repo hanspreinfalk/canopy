@@ -31,11 +31,17 @@ class AuthViewModel: ObservableObject {
                 case .authenticated:
                     hasEverAuthenticated = true
                     authState = .authenticated
+                    Analytics.identifyFromClerk()
+                    Task { @MainActor in
+                        try? await Task.sleep(for: .milliseconds(600))
+                        Analytics.identifyFromClerk()
+                    }
                 case .unauthenticated:
                     // Only act on .unauthenticated after we've confirmed auth at least once —
                     // otherwise this is just the convex.authState CurrentValueSubject default
                     // or a failed initial loginFromCache, not a real sign-out.
                     if hasEverAuthenticated {
+                        Analytics.resetIdentity()
                         authState = .unauthenticated
                     }
                 }
