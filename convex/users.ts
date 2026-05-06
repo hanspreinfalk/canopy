@@ -35,6 +35,14 @@ export const updateSelfSummary = mutation({
   },
 });
 
+export const getCreditsBalance = query({
+  args: {},
+  handler: async (ctx) => {
+    const user = await getAuthedUser(ctx);
+    return { creditsBalance: user.creditsBalance, plan: user.plan };
+  },
+});
+
 export const getPreferredModel = query({
   args: {},
   handler: async (ctx) => {

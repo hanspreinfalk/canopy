@@ -3,6 +3,7 @@
 //  canopy
 //
 
+import AppKit
 import ClerkKit
 import SwiftUI
 
@@ -11,6 +12,7 @@ enum SidebarSection {
     case memories
     case selfSummary
     case connectors
+    case pricingBilling
 }
 
 private enum Layout {
@@ -29,6 +31,8 @@ private enum Layout {
 }
 
 struct MainView: View {
+    @Environment(\.colorScheme) private var colorScheme
+
     @StateObject private var vm = MainViewModel()
     @ObservedObject private var aiStore = AIProviderStore.shared
     @State private var searchText = ""
@@ -38,6 +42,11 @@ struct MainView: View {
     @State private var selfSummaryLoaded = false
     @ObservedObject private var connectorsVM = ConnectorsViewModel.shared
     @State private var connectorSearchText = ""
+    @State private var showRenameConversationAlert = false
+    @State private var renameTargetConversationId: String? = nil
+    @State private var renameDraftTitle = ""
+    @State private var showDeleteConversationConfirm = false
+    @State private var deleteTargetConversationId: String? = nil
 
     var body: some View {
         ZStack(alignment: .topLeading) {
@@ -79,6 +88,38 @@ struct MainView: View {
             Button("OK") { vm.errorMessage = nil }
         } message: {
             Text(vm.errorMessage ?? "")
+        }
+        .alert("Rename conversation", isPresented: $showRenameConversationAlert) {
+            TextField("Title", text: $renameDraftTitle)
+            Button("Cancel", role: .cancel) {
+                renameTargetConversationId = nil
+            }
+            Button("Save") {
+                if let id = renameTargetConversationId {
+                    let t = renameDraftTitle
+                    Task { await vm.renameConversation(id: id, title: t) }
+                }
+                renameTargetConversationId = nil
+            }
+        } message: {
+            Text("This name is shown in your Recents list.")
+        }
+        .confirmationDialog(
+            "Delete this conversation?",
+            isPresented: $showDeleteConversationConfirm,
+            titleVisibility: .visible
+        ) {
+            Button("Delete", role: .destructive) {
+                if let id = deleteTargetConversationId {
+                    Task { await vm.deleteConversation(id: id) }
+                }
+                deleteTargetConversationId = nil
+            }
+            Button("Cancel", role: .cancel) {
+                deleteTargetConversationId = nil
+            }
+        } message: {
+            Text("This cannot be undone.")
         }
     }
 
@@ -156,6 +197,14 @@ struct MainView: View {
                     selectedSection = .connectors
                     vm.selectedConversationId = nil
                 }
+                SidebarStaticRow(
+                    systemImage: "creditcard",
+                    title: "Pricing & Billing",
+                    isSelected: selectedSection == .pricingBilling
+                ) {
+                    selectedSection = .pricingBilling
+                    vm.selectedConversationId = nil
+                }
             }
             .padding(.horizontal, 6)
             .padding(.bottom, 10)
@@ -175,18 +224,26 @@ struct MainView: View {
                             SidebarRow(
                                 conversation: conversation,
                                 isSelected: selectedSection == .conversations
-                                    && vm.selectedConversationId == conversation.id
+                                    && vm.selectedConversationId == conversation.id,
+                                onSelect: {
+                                    selectedSection = .conversations
+                                    vm.selectConversation(conversation.id)
+                                },
+                                onRename: {
+                                    renameTargetConversationId = conversation.id
+                                    renameDraftTitle = conversation.renameEditingInitial
+                                    showRenameConversationAlert = true
+                                },
+                                onDelete: {
+                                    deleteTargetConversationId = conversation.id
+                                    showDeleteConversationConfirm = true
+                                }
                             )
-                            .contentShape(Rectangle())
-                            .onTapGesture {
-                                selectedSection = .conversations
-                                vm.selectConversation(conversation.id)
-                            }
                         }
                         if vm.conversationsHasMore {
                             Button("Load more…") { vm.loadMoreConversations() }
                                 .buttonStyle(.borderless)
-                                .foregroundColor(.accentColor)
+                                .foregroundColor(.primary)
                                 .font(.system(size: 12))
                                 .frame(maxWidth: .infinity)
                                 .padding(.vertical, 10)
@@ -207,41 +264,86 @@ struct MainView: View {
 
             Divider().opacity(0.4)
 
+            creditsFooterRow
+                .padding(.horizontal, 12)
+                .padding(.top, 10)
+                .padding(.bottom, 6)
+
             SidebarUserRow()
                 .padding(.horizontal, 12)
                 .padding(.vertical, 10)
         }
         .background(liquidGlassBackground)
-        .overlay(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .strokeBorder(Color.white.opacity(0.5), lineWidth: 0.5)
-                .blendMode(.overlay)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .strokeBorder(Color.black.opacity(0.06), lineWidth: 0.5)
-        )
-        .shadow(color: Color.black.opacity(0.10), radius: 24, x: 0, y: 8)
-        .shadow(color: Color.black.opacity(0.04), radius: 2, x: 0, y: 1)
+        .overlay(sidebarOuterStroke)
+        .shadow(color: Color.black.opacity(colorScheme == .dark ? 0.35 : 0.10), radius: 24, x: 0, y: 8)
+        .shadow(color: Color.black.opacity(colorScheme == .dark ? 0.20 : 0.04), radius: 2, x: 0, y: 1)
     }
 
+    /// Light mode: unchanged frosted-glass look. Dark mode: tint aligned with `windowBackgroundColor` so the sidebar is not a bright slab.
     private var liquidGlassBackground: some View {
-        RoundedRectangle(cornerRadius: 16, style: .continuous)
-            .fill(.ultraThinMaterial)
-            .overlay(
+        Group {
+            if colorScheme == .dark {
                 RoundedRectangle(cornerRadius: 16, style: .continuous)
                     .fill(
                         LinearGradient(
                             colors: [
-                                Color.white.opacity(0.30),
-                                Color.white.opacity(0.05)
+                                Color(NSColor.windowBackgroundColor),
+                                Color(NSColor.windowBackgroundColor).opacity(0.92)
                             ],
                             startPoint: .topLeading,
                             endPoint: .bottomTrailing
                         )
                     )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .fill(
+                                LinearGradient(
+                                    colors: [
+                                        Color.white.opacity(0.07),
+                                        Color.white.opacity(0.02)
+                                    ],
+                                    startPoint: .topLeading,
+                                    endPoint: .bottomTrailing
+                                )
+                            )
+                            .blendMode(.overlay)
+                    )
+            } else {
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .fill(.ultraThinMaterial)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .fill(
+                                LinearGradient(
+                                    colors: [
+                                        Color.white.opacity(0.30),
+                                        Color.white.opacity(0.05)
+                                    ],
+                                    startPoint: .topLeading,
+                                    endPoint: .bottomTrailing
+                                )
+                            )
+                            .blendMode(.overlay)
+                    )
+            }
+        }
+    }
+
+    private var sidebarOuterStroke: some View {
+        ZStack {
+            if colorScheme == .dark {
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5)
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .strokeBorder(Color.black.opacity(0.45), lineWidth: 0.5)
+            } else {
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .strokeBorder(Color.white.opacity(0.5), lineWidth: 0.5)
                     .blendMode(.overlay)
-            )
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .strokeBorder(Color.black.opacity(0.06), lineWidth: 0.5)
+            }
+        }
     }
 
     private var filteredConversations: [ConvexConversation] {
@@ -264,7 +366,40 @@ struct MainView: View {
             selfSummaryPanel
         case .connectors:
             connectorsPanel
+        case .pricingBilling:
+            pricingBillingPanel
         }
+    }
+
+    private var creditsFooterRow: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "sparkles")
+                .font(.system(size: 13))
+                .foregroundColor(.primary.opacity(0.55))
+                .frame(width: 18)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Credits")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundColor(.secondary)
+                if let balance = vm.creditsBalance {
+                    Text("\(balance)")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundColor(.primary)
+                        .monospacedDigit()
+                } else {
+                    Text("…")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundColor(.secondary)
+                }
+            }
+            Spacer()
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .fill(Color.primary.opacity(0.05))
+        )
     }
 
     /// Shared toolbar. When the sidebar is collapsed, traffic lights live in the
@@ -311,7 +446,7 @@ struct MainView: View {
                             if vm.messagesHasMore {
                                 Button("Load earlier messages…") { vm.loadMoreMessages() }
                                     .buttonStyle(.borderless)
-                                    .foregroundColor(.accentColor)
+                                    .foregroundColor(.primary)
                                     .font(.system(size: 12))
                                     .frame(maxWidth: .infinity)
                                     .padding(.top, 8)
@@ -413,8 +548,6 @@ struct MainView: View {
         VStack(spacing: 0) {
             panelToolbar(title: "Memories")
 
-            Divider().opacity(0.5)
-
             ScrollView {
                 LazyVStack(spacing: 10) {
                     ForEach(hardcodedMemories) { memory in
@@ -454,18 +587,18 @@ struct MainView: View {
                         if vm.selfSummarySaving {
                             ProgressView()
                                 .controlSize(.small)
-                                .tint(.white)
+                                .tint(colorScheme == .dark ? .black : .white)
                         } else {
                             Text("Save")
                                 .font(.system(size: 13, weight: .medium))
                         }
                     }
-                    .foregroundColor(.white)
+                    .foregroundColor(colorScheme == .dark ? .black : .white)
                     .padding(.horizontal, 14)
                     .padding(.vertical, 6)
                     .background(
                         RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .fill(Color.black)
+                            .fill(colorScheme == .dark ? Color.white : Color.black)
                     )
                 }
                 .buttonStyle(.plain)
@@ -543,8 +676,6 @@ struct MainView: View {
                     .help("Refresh connections")
                 }
             }
-
-            Divider().opacity(0.5)
 
             // Search bar
             HStack(spacing: 8) {
@@ -632,7 +763,7 @@ struct MainView: View {
                 HStack(spacing: 6) {
                     Image(systemName: "sparkles")
                         .font(.system(size: 11))
-                        .foregroundColor(.accentColor)
+                        .foregroundColor(.primary.opacity(0.45))
                     Text("Claude and OpenAI will use your connected apps when you chat.")
                         .font(.system(size: 11))
                         .foregroundColor(.secondary)
@@ -640,7 +771,7 @@ struct MainView: View {
                 .padding(.horizontal, 16)
                 .padding(.vertical, 10)
                 .frame(maxWidth: .infinity)
-                .background(Color.accentColor.opacity(0.05))
+                .background(Color.primary.opacity(0.06))
             }
         }
         .task {
@@ -655,6 +786,82 @@ struct MainView: View {
             Button("OK") { connectorsVM.errorMessage = nil }
         } message: {
             Text(connectorsVM.errorMessage ?? "")
+        }
+    }
+
+    // MARK: - Pricing & Billing panel
+
+    private var pricingBillingPanel: some View {
+        VStack(spacing: 0) {
+            panelToolbar(title: "Pricing & Billing")
+
+            VStack(alignment: .leading, spacing: 18) {
+                Text("Choose the plan that fits how you use Canopy.")
+                    .font(.system(size: 13))
+                    .foregroundColor(.secondary)
+                    .frame(maxWidth: 920, alignment: .leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 28)
+                    .padding(.top, 24)
+
+                Grid(horizontalSpacing: 14, verticalSpacing: 14) {
+                    GridRow {
+                        PricingTierCard(
+                            name: "Free",
+                            priceDollars: 0,
+                            priceSuffix: "",
+                            billingNote: "No credit card required",
+                            features: [
+                                "Core assistant & chat",
+                                "Standard models",
+                                "Self summary & memories",
+                            ],
+                            isPopular: false,
+                            isCurrent: vm.subscriptionPlan == "free",
+                            actionTitle: vm.subscriptionPlan == "free" ? "Current plan" : "Select Free"
+                        )
+                        .frame(maxWidth: .infinity, alignment: .topLeading)
+                        PricingTierCard(
+                            name: "Pro",
+                            priceDollars: 29,
+                            priceSuffix: "/mo",
+                            billingNote: "Billed monthly",
+                            features: [
+                                "Generous credit pool",
+                                "All chat models",
+                                "Connectors & automations",
+                            ],
+                            isPopular: true,
+                            isCurrent: vm.subscriptionPlan == "pro",
+                            actionTitle: vm.subscriptionPlan == "pro" ? "Current plan" : "Upgrade to Pro"
+                        )
+                        .frame(maxWidth: .infinity, alignment: .topLeading)
+                    }
+                    GridRow {
+                        PricingTierCard(
+                            name: "Premium",
+                            priceDollars: 199,
+                            priceSuffix: "/mo",
+                            billingNote: "Billed monthly",
+                            features: [
+                                "Maximum credits & throughput",
+                                "Early access to features",
+                                "Priority support",
+                            ],
+                            isPopular: false,
+                            isCurrent: false,
+                            actionTitle: "Upgrade to Premium"
+                        )
+                        .gridCellColumns(2)
+                        .frame(maxWidth: .infinity, alignment: .topLeading)
+                    }
+                }
+                .padding(.horizontal, 28)
+                .padding(.bottom, 24)
+                .frame(maxWidth: 920)
+                .frame(maxWidth: .infinity)
+            }
+            Spacer(minLength: 0)
         }
     }
 
@@ -891,19 +1098,44 @@ private struct SidebarStaticRow: View {
 private struct SidebarRow: View {
     let conversation: ConvexConversation
     let isSelected: Bool
+    let onSelect: () -> Void
+    let onRename: () -> Void
+    let onDelete: () -> Void
     @State private var isHovered = false
 
     var body: some View {
-        HStack {
-            Text(conversation.displayTitle)
-                .font(.system(size: 13))
-                .foregroundColor(.primary)
-                .lineLimit(1)
-                .truncationMode(.tail)
-            Spacer(minLength: 0)
+        HStack(spacing: 4) {
+            Button(action: onSelect) {
+                HStack {
+                    Text(conversation.displayTitle)
+                        .font(.system(size: 13))
+                        .foregroundColor(.primary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    Spacer(minLength: 0)
+                }
+            }
+            .buttonStyle(.plain)
+
+            if isHovered {
+                Menu {
+                    Button("Rename…") { onRename() }
+                    Button("Delete…", role: .destructive) { onDelete() }
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(.primary.opacity(0.7))
+                        .frame(width: 22, height: 22)
+                        .contentShape(Rectangle())
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .help("Conversation options")
+            }
         }
-        .padding(.horizontal, 10)
+        .padding(.horizontal, 6)
         .padding(.vertical, 7)
+        .padding(.leading, 4)
         .background(
             RoundedRectangle(cornerRadius: 7, style: .continuous)
                 .fill(rowBackground)
@@ -921,6 +1153,8 @@ private struct SidebarRow: View {
 // MARK: - Connector card
 
 private struct ConnectorCard: View {
+    @Environment(\.colorScheme) private var colorScheme
+
     let app: ComposioApp
     let isConnected: Bool
     let isConnecting: Bool
@@ -1007,17 +1241,17 @@ private struct ConnectorCard: View {
     private var connectedBadge: some View {
         HStack(spacing: 3) {
             Circle()
-                .fill(Color.green)
+                .fill(Color.primary.opacity(0.45))
                 .frame(width: 5, height: 5)
             Text("Connected")
                 .font(.system(size: 9, weight: .semibold))
-                .foregroundColor(.green)
+                .foregroundColor(.secondary)
         }
         .padding(.horizontal, 6)
         .padding(.vertical, 3)
         .background(
             RoundedRectangle(cornerRadius: 5, style: .continuous)
-                .fill(Color.green.opacity(0.1))
+                .fill(Color.primary.opacity(0.08))
         )
     }
 
@@ -1036,12 +1270,12 @@ private struct ConnectorCard: View {
             Button(action: onDisconnect) {
                 Text("Connected")
                     .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(.white)
+                    .foregroundColor(.primary)
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 5)
                     .background(
                         RoundedRectangle(cornerRadius: 6, style: .continuous)
-                            .fill(Color(red: 0.13, green: 0.50, blue: 0.22))
+                            .fill(Color.primary.opacity(0.10))
                     )
             }
             .buttonStyle(.plain)
@@ -1050,16 +1284,134 @@ private struct ConnectorCard: View {
             Button(action: onConnect) {
                 Text("Connect")
                     .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(.white)
+                    .foregroundColor(colorScheme == .dark ? .black : .white)
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 5)
                     .background(
                         RoundedRectangle(cornerRadius: 6, style: .continuous)
-                            .fill(Color.black)
+                            .fill(colorScheme == .dark ? Color.white : Color.black)
                     )
             }
             .buttonStyle(.plain)
         }
+    }
+}
+
+// MARK: - Pricing tier card
+
+private struct PricingTierCard: View {
+    @Environment(\.colorScheme) private var colorScheme
+
+    let name: String
+    let priceDollars: Int
+    /// e.g. "/mo" or empty for Free
+    let priceSuffix: String
+    let billingNote: String
+    let features: [String]
+    let isPopular: Bool
+    let isCurrent: Bool
+    let actionTitle: String
+
+    @State private var isHovered = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text(name)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundColor(.primary)
+                Spacer()
+                if isPopular {
+                    Text("POPULAR")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundColor(.primary.opacity(0.65))
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
+                        .background(
+                            RoundedRectangle(cornerRadius: 4, style: .continuous)
+                                .fill(Color.primary.opacity(0.10))
+                        )
+                }
+            }
+
+            HStack(alignment: .firstTextBaseline, spacing: 2) {
+                Text(priceDollars == 0 ? "$0" : "$\(priceDollars)")
+                    .font(.system(size: 23, weight: .semibold))
+                    .foregroundColor(.primary)
+                if !priceSuffix.isEmpty {
+                    Text(priceSuffix)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(.secondary)
+                }
+            }
+
+            Text(billingNote)
+                .font(.system(size: 11))
+                .foregroundColor(.secondary)
+
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(features, id: \.self) { line in
+                    HStack(alignment: .top, spacing: 8) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 12))
+                            .foregroundColor(.primary.opacity(0.45))
+                            .padding(.top, 2)
+                        Text(line)
+                            .font(.system(size: 12))
+                            .foregroundColor(.primary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+            .padding(.top, 4)
+
+            Button(action: {}) {
+                Text(actionTitle)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(ctaLabelColor)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 8)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .fill(ctaBackgroundColor)
+                    )
+            }
+            .buttonStyle(.plain)
+            .disabled(isCurrent)
+        }
+        .padding(16)
+        .fixedSize(horizontal: false, vertical: true)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color(NSColor.controlBackgroundColor))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(strokeColor, lineWidth: isPopular ? 1.25 : 0.5)
+        )
+        .shadow(color: Color.black.opacity(isHovered ? 0.08 : 0.04), radius: isHovered ? 10 : 5, x: 0, y: 2)
+        .onHover { isHovered = $0 }
+    }
+
+    private var strokeColor: Color {
+        if isPopular { return Color.primary.opacity(0.28) }
+        return Color.primary.opacity(0.07)
+    }
+
+    /// Light: dark fill + white label; dark: white fill + black label — no accent blue.
+    private var ctaBackgroundColor: Color {
+        if isCurrent {
+            return Color.primary.opacity(0.06)
+        }
+        return colorScheme == .dark ? Color.white : Color.black
+    }
+
+    private var ctaLabelColor: Color {
+        if isCurrent {
+            return Color.primary.opacity(0.45)
+        }
+        return colorScheme == .dark ? .black : .white
     }
 }
 

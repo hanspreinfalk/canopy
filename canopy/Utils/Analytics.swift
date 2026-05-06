@@ -40,10 +40,11 @@ enum Analytics {
         guard !distinctId.isEmpty else { return }
 
         var props: [String: Any] = [:]
-        if let email = user.primaryEmailAddress?.emailAddress?
-            .trimmingCharacters(in: .whitespacesAndNewlines),
-            !email.isEmpty {
-            props["email"] = email
+        if let primary = user.primaryEmailAddress {
+            let email = primary.emailAddress.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !email.isEmpty {
+                props["email"] = email
+            }
         }
         if let name = displayName(for: user) {
             props["name"] = name

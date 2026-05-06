@@ -1,6 +1,22 @@
 import { v } from "convex/values";
-import { mutation, query, MutationCtx, QueryCtx } from "./_generated/server";
+import {
+  mutation,
+  query,
+  MutationCtx,
+  QueryCtx,
+} from "./_generated/server";
 import { Id } from "./_generated/dataModel";
+
+async function getUserMutation(ctx: MutationCtx) {
+  const identity = await ctx.auth.getUserIdentity();
+  if (!identity) throw new Error("Unauthorized");
+  const user = await ctx.db
+    .query("users")
+    .withIndex("by_clerk_user_id", (q) => q.eq("clerkUserId", identity.subject))
+    .unique();
+  if (!user) throw new Error("User not found");
+  return user;
+}
 
 const INACTIVITY_MS = 15 * 60 * 1000; // 15 min
 
@@ -133,6 +149,47 @@ export const getRecentMessages = query({
             })),
         };
     },
+});
+
+export const renameConversation = mutation({
+  args: {
+    conversationId: v.id("conversations"),
+    title: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const user = await getUserMutation(ctx);
+    const conversation = await ctx.db.get(args.conversationId);
+    if (!conversation || conversation.userId !== user._id) {
+      throw new Error("Not found");
+    }
+    const trimmed = args.title.trim();
+    await ctx.db.patch(args.conversationId, {
+      title: trimmed.length > 0 ? trimmed : undefined,
+    });
+    return null;
+  },
+});
+
+export const deleteConversation = mutation({
+  args: { conversationId: v.id("conversations") },
+  handler: async (ctx, args) => {
+    const user = await getUserMutation(ctx);
+    const conversation = await ctx.db.get(args.conversationId);
+    if (!conversation || conversation.userId !== user._id) {
+      throw new Error("Not found");
+    }
+    const messages = await ctx.db
+      .query("messages")
+      .withIndex("by_conversation_id", (q) =>
+        q.eq("conversationId", args.conversationId),
+      )
+      .collect();
+    for (const m of messages) {
+      await ctx.db.delete(m._id);
+    }
+    await ctx.db.delete(args.conversationId);
+    return null;
+  },
 });
 
 export const listMessages = query({

@@ -32,6 +32,12 @@ struct ConvexConversation: Decodable, Identifiable, Equatable {
     }
 
     var messageCountInt: Int { Int(messageCount) }
+
+    /// Starting text when renaming (custom title if set, otherwise the generated display title).
+    var renameEditingInitial: String {
+        if let title, !title.isEmpty { return title }
+        return displayTitle
+    }
 }
 
 struct ConversationsResult: Decodable {
@@ -69,6 +75,11 @@ struct SelfSummaryResult: Decodable {
     let selfSummaryUpdatedAt: Double?
 }
 
+struct CreditsBalanceResult: Decodable {
+    let creditsBalance: Double
+    let plan: String
+}
+
 // MARK: - ViewModel
 
 @MainActor
@@ -81,6 +92,9 @@ final class MainViewModel: ObservableObject {
     @Published var selfSummary: String = ""
     @Published var selfSummaryUpdatedAt: Date? = nil
     @Published var selfSummarySaving = false
+    @Published var creditsBalance: Int? = nil
+    /// Convex `users.plan`: `"free"` | `"pro"` (Premium is upgrade-only in UI until schema adds it).
+    @Published var subscriptionPlan: String = "free"
     @Published var errorMessage: String? = nil
 
     private var conversationsNumItems: Double = 20
@@ -88,10 +102,12 @@ final class MainViewModel: ObservableObject {
     private var conversationsSub: AnyCancellable?
     private var messagesSub: AnyCancellable?
     private var selfSummarySub: AnyCancellable?
+    private var creditsSub: AnyCancellable?
 
     init() {
         resubscribeConversations()
         resubscribeSelfSummary()
+        resubscribeCredits()
     }
 
     private func resubscribeConversations() {
@@ -167,6 +183,23 @@ final class MainViewModel: ObservableObject {
             )
     }
 
+    private func resubscribeCredits() {
+        creditsSub = convex
+            .subscribe(to: "users:getCreditsBalance", with: [:] as [String: ConvexEncodable?])
+            .receive(on: DispatchQueue.main)
+            .sink(
+                receiveCompletion: { [weak self] result in
+                    if case .failure(let err) = result {
+                        self?.errorMessage = err.localizedDescription
+                    }
+                },
+                receiveValue: { [weak self] (result: CreditsBalanceResult) in
+                    self?.creditsBalance = Int(result.creditsBalance)
+                    self?.subscriptionPlan = result.plan
+                }
+            )
+    }
+
     func saveSelfSummary(_ text: String) {
         selfSummarySaving = true
         Task {
@@ -177,6 +210,36 @@ final class MainViewModel: ObservableObject {
                 await MainActor.run { errorMessage = error.localizedDescription }
             }
             await MainActor.run { selfSummarySaving = false }
+        }
+    }
+
+    func renameConversation(id: String, title: String) async {
+        do {
+            let args: [String: ConvexEncodable?] = [
+                "conversationId": id,
+                "title": title,
+            ]
+            try await convex.mutation("conversations:renameConversation", with: args)
+        } catch {
+            await MainActor.run { errorMessage = error.localizedDescription }
+        }
+    }
+
+    func deleteConversation(id: String) async {
+        do {
+            let args: [String: ConvexEncodable?] = ["conversationId": id]
+            try await convex.mutation("conversations:deleteConversation", with: args)
+            await MainActor.run {
+                if selectedConversationId == id {
+                    selectedConversationId = nil
+                    messages = []
+                    messagesHasMore = false
+                    messagesSub?.cancel()
+                    messagesSub = nil
+                }
+            }
+        } catch {
+            await MainActor.run { errorMessage = error.localizedDescription }
         }
     }
 }
