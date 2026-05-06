@@ -234,8 +234,59 @@ You can poke around in their email, calendar, Stripe, etc. When you're about to 
 
 If they ask what you can do, don't list tools. Say something like "depends — what's bugging you?" or "honestly easier if you just tell me what you need." Then react to what they actually want.
 
+# Pointing at things on their screen
+You also have a tool called \`take_screenshot\`. Call it whenever the user asks for help finding, opening, navigating, or activating something on THEIR computer's UI — "how do I turn on dark mode," "where's the share button," "open System Settings privacy," "find the bookmark menu," etc. The app will capture their screen, locate the element you describe, and fly a small blue arrow to it. Before calling, drop one short natural sentence like "lemme show you" or "one sec, pointing it out" — never name the tool. Pass a tight, specific \`description\` of what to point at (e.g. "the Apple menu in the top-left", "the Dark Mode toggle in System Settings → Appearance"). After the tool returns, briefly say what they should click or do next. Don't use this for things that aren't a UI element on screen.
+
 # Substance
 Lead with the answer. Reasoning after, if it's useful. If they're wrong, tell them, kindly. If you're not sure, say so — pretending to know is worse than admitting a gap. Be brief by default; expand when the topic earns it. Markdown formatting (headers, bullet lists, bold) is for documents, not conversations — avoid it unless the user is clearly asking for a structured output.`;
+}
+
+// ─── Built-in tools ───────────────────────────────────────────────────────────
+//
+// Tools we implement ourselves (not via Composio). The model sees them in the
+// tool list alongside Composio tools; when it calls one we don't hit Composio,
+// we just emit tool events and feed back a synthetic tool_result so the loop
+// keeps progressing.
+
+const TAKE_SCREENSHOT_NAME = "take_screenshot";
+
+const TAKE_SCREENSHOT_DESCRIPTION =
+  "Capture the user's current screen and visually point them to a specific UI element with a small flying blue arrow. " +
+  "Use whenever the user asks how to do something on their computer (e.g. 'how do I turn on dark mode', 'open System Settings', 'where's the share button', 'find the bookmark menu'). " +
+  "Pass a tight, specific 'description' of what to point at — be concrete about the element AND where to look (e.g. 'the Apple menu in the top-left of the menu bar', 'the Dark Mode toggle in System Settings → Appearance'). " +
+  "Always tell the user in one short, natural sentence what you're about to do BEFORE calling this tool (e.g. 'lemme show you'). " +
+  "Don't call this for things that aren't an on-screen UI element.";
+
+const TAKE_SCREENSHOT_INPUT_SCHEMA = {
+  type: "object",
+  properties: {
+    description: {
+      type: "string",
+      description:
+        "Short, specific description of the UI element to point at, including where it lives on screen.",
+    },
+  },
+  required: ["description"],
+} as const;
+
+// Synthetic tool result we return to the model after a take_screenshot call.
+// The actual screenshot capture + element location happens on the client,
+// out of band; the model doesn't need the result in its conversation context,
+// it just needs an acknowledgement so it can continue talking.
+const TAKE_SCREENSHOT_TOOL_RESULT = JSON.stringify({
+  status: "ok",
+  note: "Screenshot captured and the user is being shown the location with a visual arrow on their screen. Briefly tell them what to click or do next.",
+});
+
+function isBuiltInToolName(name: string): boolean {
+  return name === TAKE_SCREENSHOT_NAME;
+}
+
+function executeBuiltInTool(name: string, _input: Record<string, unknown>): unknown {
+  if (name === TAKE_SCREENSHOT_NAME) {
+    return JSON.parse(TAKE_SCREENSHOT_TOOL_RESULT);
+  }
+  return { error: `Unknown built-in tool: ${name}` };
 }
 
 const COMPOSIO_BASE = "https://backend.composio.dev";
@@ -368,20 +419,25 @@ function emitEvent(
 
 type GeminiContent = { role: string; parts: Array<Record<string, unknown>> };
 
-function buildGeminiToolsFromComposio(rawTools: ComposioTool[]): unknown[] {
-  if (rawTools.length === 0) return [];
-  return [
+function buildGeminiTools(rawTools: ComposioTool[]): unknown[] {
+  const builtIn = [
     {
-      functionDeclarations: rawTools.map((t) => ({
-        name: t.slug,
-        description: (t.description ?? "").slice(0, 4096),
-        parameters: (t.input_parameters ?? t.input_schema ?? t.parameters ?? {
-          type: "object",
-          properties: {},
-        }) as Record<string, unknown>,
-      })),
+      name: TAKE_SCREENSHOT_NAME,
+      description: TAKE_SCREENSHOT_DESCRIPTION,
+      parameters: TAKE_SCREENSHOT_INPUT_SCHEMA as unknown as Record<string, unknown>,
     },
   ];
+  const composio = rawTools.map((t) => ({
+    name: t.slug,
+    description: (t.description ?? "").slice(0, 4096),
+    parameters: (t.input_parameters ?? t.input_schema ?? t.parameters ?? {
+      type: "object",
+      properties: {},
+    }) as Record<string, unknown>,
+  }));
+  const all = [...builtIn, ...composio];
+  if (all.length === 0) return [];
+  return [{ functionDeclarations: all }];
 }
 
 function extractGeminiFunctionCallsFromCandidate(
@@ -498,7 +554,7 @@ const handleGoogleMCPChat = httpAction(async (_ctx, request) => {
     async start(controller) {
       try {
         const rawTools = await fetchComposioTools(entityId).catch(() => [] as ComposioTool[]);
-        const geminiTools = buildGeminiToolsFromComposio(rawTools);
+        const geminiTools = buildGeminiTools(rawTools);
         console.log(`[/chat/google-mcp] Composio tools: ${rawTools.length}`);
 
         const contents: GeminiContent[] = [
@@ -524,8 +580,13 @@ const handleGoogleMCPChat = httpAction(async (_ctx, request) => {
 
           // Emit tool_start for each call so the UI can show progress.
           for (const fc of functionCallsRaw) {
+            const args = (fc["args"] ?? fc["arguments"] ?? {}) as Record<string, unknown>;
             emitEvent(controller, encoder, {
-              tool_start: { name: fc["name"] as string, id: (fc["id"] as string) ?? null },
+              tool_start: {
+                name: fc["name"] as string,
+                id: (fc["id"] as string) ?? null,
+                input: args,
+              },
             });
           }
 
@@ -533,9 +594,14 @@ const handleGoogleMCPChat = httpAction(async (_ctx, request) => {
             functionCallsRaw.map(async (fc) => {
               const name = fc["name"] as string;
               const args = (fc["args"] ?? fc["arguments"] ?? {}) as Record<string, unknown>;
-              const execData = await executeComposioTool(name, args, entityId).catch((err) => ({
-                error: String(err),
-              }));
+              let execData: unknown;
+              if (isBuiltInToolName(name)) {
+                execData = executeBuiltInTool(name, args);
+              } else {
+                execData = await executeComposioTool(name, args, entityId).catch((err) => ({
+                  error: String(err),
+                }));
+              }
               const ok = !(execData && typeof execData === "object" && "error" in execData);
               emitEvent(controller, encoder, {
                 tool_end: { name, id: (fc["id"] as string) ?? null, ok },
@@ -766,24 +832,36 @@ const handleAnthropicMCPChat = httpAction(async (_ctx, request) => {
     async start(controller) {
       try {
         const rawTools = await fetchComposioTools(entityId).catch(() => [] as ComposioTool[]);
-        // Build the tool list. Mark the LAST tool with cache_control so
-        // Anthropic caches the entire tools+system prefix. On follow-up
-        // messages within ~5 minutes, this is a cache hit and TTFT drops
-        // dramatically (and you pay 1/10th for the cached tokens).
-        const anthropicTools = rawTools.map((t, i) => {
-          const tool: Record<string, unknown> = {
-            name: t.slug,
-            description: t.description ?? "",
-            input_schema: (t.input_parameters ?? t.input_schema ?? t.parameters ?? {
-              type: "object",
-              properties: {},
-            }) as Record<string, unknown>,
-          };
-          if (i === rawTools.length - 1) {
-            tool.cache_control = { type: "ephemeral" };
-          }
-          return tool;
-        });
+        // Build the tool list. Built-in tools (e.g. take_screenshot) are
+        // always available; Composio tools are appended after them.
+        const builtInAnthropicTools: Array<Record<string, unknown>> = [
+          {
+            name: TAKE_SCREENSHOT_NAME,
+            description: TAKE_SCREENSHOT_DESCRIPTION,
+            input_schema: TAKE_SCREENSHOT_INPUT_SCHEMA as unknown as Record<string, unknown>,
+          },
+        ];
+
+        const composioAnthropicTools: Array<Record<string, unknown>> = rawTools.map((t) => ({
+          name: t.slug,
+          description: t.description ?? "",
+          input_schema: (t.input_parameters ?? t.input_schema ?? t.parameters ?? {
+            type: "object",
+            properties: {},
+          }) as Record<string, unknown>,
+        }));
+
+        const anthropicTools: Array<Record<string, unknown>> = [
+          ...builtInAnthropicTools,
+          ...composioAnthropicTools,
+        ];
+        // Mark the LAST tool with cache_control so Anthropic caches the
+        // entire tools+system prefix. On follow-up messages within ~5
+        // minutes, this is a cache hit and TTFT drops dramatically (and
+        // you pay 1/10th for the cached tokens).
+        if (anthropicTools.length > 0) {
+          anthropicTools[anthropicTools.length - 1].cache_control = { type: "ephemeral" };
+        }
         console.log(`[/chat/anthropic-mcp] ${anthropicTools.length} tools:`, anthropicTools.map((t) => t.name));
 
         // System prompt as an array so we can attach cache_control. This
@@ -824,17 +902,28 @@ const handleAnthropicMCPChat = httpAction(async (_ctx, request) => {
           );
 
           // Tell the UI which tools are starting before we await them.
+          // For built-in tools we forward the input so the client can act
+          // on it (e.g. capture+locate for take_screenshot).
           for (const toolUse of toolUseBlocks) {
             emitEvent(controller, encoder, {
-              tool_start: { name: toolUse.name, id: toolUse.id },
+              tool_start: {
+                name: toolUse.name,
+                id: toolUse.id,
+                input: toolUse.input ?? {},
+              },
             });
           }
 
           const toolResults = await Promise.all(
             toolUseBlocks.map(async (toolUse) => {
-              const execData = await executeComposioTool(toolUse.name, toolUse.input, entityId).catch(
-                (err) => ({ error: String(err) })
-              );
+              let execData: unknown;
+              if (isBuiltInToolName(toolUse.name)) {
+                execData = executeBuiltInTool(toolUse.name, toolUse.input ?? {});
+              } else {
+                execData = await executeComposioTool(toolUse.name, toolUse.input, entityId).catch(
+                  (err) => ({ error: String(err) })
+                );
+              }
               const ok = !(execData && typeof execData === "object" && "error" in execData);
               emitEvent(controller, encoder, {
                 tool_end: { name: toolUse.name, id: toolUse.id, ok },
@@ -891,7 +980,17 @@ const handleOpenAIToolsChat = httpAction(async (_ctx, request) => {
     async start(controller) {
       try {
         const rawTools = await fetchComposioTools(entityId).catch(() => [] as ComposioTool[]);
-        const openaiTools = rawTools.map((t) => ({
+        const builtInOpenAITools = [
+          {
+            type: "function" as const,
+            function: {
+              name: TAKE_SCREENSHOT_NAME,
+              description: TAKE_SCREENSHOT_DESCRIPTION,
+              parameters: TAKE_SCREENSHOT_INPUT_SCHEMA as unknown as Record<string, unknown>,
+            },
+          },
+        ];
+        const composioOpenAITools = rawTools.map((t) => ({
           type: "function" as const,
           function: {
             name: t.slug,
@@ -902,6 +1001,7 @@ const handleOpenAIToolsChat = httpAction(async (_ctx, request) => {
             }) as Record<string, unknown>,
           },
         }));
+        const openaiTools = [...builtInOpenAITools, ...composioOpenAITools];
         console.log(`[/chat/openai-tools] ${openaiTools.length} tools:`, openaiTools.map((t) => t.function.name));
 
         const messages: OpenAIMessage[] = [
@@ -921,17 +1021,25 @@ const handleOpenAIToolsChat = httpAction(async (_ctx, request) => {
           if (finishReason !== "tool_calls") break;
 
           for (const tc of toolCalls) {
+            let parsedInput: Record<string, unknown> = {};
+            try { parsedInput = JSON.parse(tc.function.arguments) as Record<string, unknown>; } catch { /* ignore */ }
             emitEvent(controller, encoder, {
-              tool_start: { name: tc.function.name, id: tc.id },
+              tool_start: { name: tc.function.name, id: tc.id, input: parsedInput },
             });
           }
 
           const toolResults = await Promise.all(
             toolCalls.map(async (tc) => {
-              const args = JSON.parse(tc.function.arguments) as Record<string, unknown>;
-              const execData = await executeComposioTool(tc.function.name, args, entityId).catch(
-                (err) => ({ error: String(err) })
-              );
+              let args: Record<string, unknown> = {};
+              try { args = JSON.parse(tc.function.arguments) as Record<string, unknown>; } catch { /* ignore */ }
+              let execData: unknown;
+              if (isBuiltInToolName(tc.function.name)) {
+                execData = executeBuiltInTool(tc.function.name, args);
+              } else {
+                execData = await executeComposioTool(tc.function.name, args, entityId).catch(
+                  (err) => ({ error: String(err) })
+                );
+              }
               const ok = !(execData && typeof execData === "object" && "error" in execData);
               emitEvent(controller, encoder, {
                 tool_end: { name: tc.function.name, id: tc.id, ok },

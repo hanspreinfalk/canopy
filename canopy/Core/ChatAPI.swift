@@ -290,7 +290,10 @@ enum ChatStreamEvent: Sendable {
     case text(String)
     /// The agent is about to invoke a tool. Whatever text arrived before this
     /// is the preamble ("lemme peek at your calendar"); show a spinner now.
-    case toolStart(name: String, id: String?)
+    /// `inputJSON` is the raw JSON-serialized tool input (a JSON object), or
+    /// nil when the backend didn't include it. Built-in client-side tools
+    /// (e.g. `take_screenshot`) parse this to drive their behavior.
+    case toolStart(name: String, id: String?, inputJSON: String?)
     /// Tool finished. Subsequent `text` events are the post-tool answer.
     case toolEnd(name: String, id: String?, ok: Bool)
     /// Server-reported error during the stream. The connection ends after this.
@@ -638,7 +641,20 @@ final class ChatAPI {
             if let toolStart = json["tool_start"] as? [String: Any],
                let name = toolStart["name"] as? String {
                 let id = toolStart["id"] as? String
-                return .event(.toolStart(name: name, id: id))
+                // Re-serialize the input back to JSON so we can pass a
+                // single Sendable string into the `ChatStreamEvent`. The
+                // consumer parses it back when (and only when) it cares.
+                var inputJSON: String? = nil
+                if let input = toolStart["input"] {
+                    if let inputDict = input as? [String: Any],
+                       let serialized = try? JSONSerialization.data(withJSONObject: inputDict),
+                       let str = String(data: serialized, encoding: .utf8) {
+                        inputJSON = str
+                    } else if let str = input as? String {
+                        inputJSON = str
+                    }
+                }
+                return .event(.toolStart(name: name, id: id, inputJSON: inputJSON))
             }
             if let toolEnd = json["tool_end"] as? [String: Any],
                let name = toolEnd["name"] as? String {

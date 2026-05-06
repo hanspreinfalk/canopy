@@ -13,6 +13,7 @@ import type * as http from "../http.js";
 import type * as routes_chat from "../routes/chat.js";
 import type * as routes_clerk from "../routes/clerk.js";
 import type * as routes_composio from "../routes/composio.js";
+import type * as routes_screenshot from "../routes/screenshot.js";
 import type * as routes_transcribe from "../routes/transcribe.js";
 import type * as routes_tts from "../routes/tts.js";
 import type * as users from "../users.js";
@@ -29,6 +30,7 @@ declare const fullApi: ApiFromModules<{
   "routes/chat": typeof routes_chat;
   "routes/clerk": typeof routes_clerk;
   "routes/composio": typeof routes_composio;
+  "routes/screenshot": typeof routes_screenshot;
   "routes/transcribe": typeof routes_transcribe;
   "routes/tts": typeof routes_tts;
   users: typeof users;
