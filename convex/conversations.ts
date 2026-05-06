@@ -9,6 +9,10 @@ import {
 import { internal } from "./_generated/api";
 import { Id } from "./_generated/dataModel";
 import { estimateMessageCostUsd } from "./modelPricing";
+import {
+  DISTILLATION_INACTIVITY_MS,
+  rescheduleConversationDistillation,
+} from "./distillation";
 
 async function getUserMutation(ctx: MutationCtx) {
   const identity = await ctx.auth.getUserIdentity();
@@ -125,6 +129,25 @@ export const saveMessage = mutation({
                     createdAtMs: now,
                 }
             );
+        }
+
+        // Debounced distillation: every user turn cancels the previously
+        // scheduled distillation for this conversation and replaces it
+        // with a fresh one 15 minutes out. If the user keeps typing, the
+        // job keeps getting pushed; once they go quiet for 15 minutes the
+        // most-recent schedule fires.
+        if (args.role === "user" && conv) {
+            const refreshed = await ctx.db.get(conversationId);
+            if (refreshed) {
+                const scheduledId = await rescheduleConversationDistillation(
+                    ctx,
+                    refreshed,
+                    DISTILLATION_INACTIVITY_MS,
+                );
+                await ctx.db.patch(conversationId, {
+                    pendingDistillationJobId: scheduledId,
+                });
+            }
         }
 
         return null;

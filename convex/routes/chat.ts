@@ -1,6 +1,14 @@
 import { httpRouter } from "convex/server";
-import { httpAction } from "../_generated/server";
+import { ActionCtx, httpAction } from "../_generated/server";
 import { internal } from "../_generated/api";
+import {
+  searchConversationSummariesViaVectorIndex,
+  searchMemoriesViaVectorIndex,
+} from "../distillation";
+import {
+  buildSystemPrompt,
+  type PastConversationSummary,
+} from "../systemPrompts";
 
 type HttpRouter = ReturnType<typeof httpRouter>;
 
@@ -231,43 +239,6 @@ type AnthropicContentBlock =
   | { type: "text"; text: string }
   | { type: "tool_use"; id: string; name: string; input: Record<string, unknown> };
 
-// NOTE: buildSystemPrompt returns a mostly-static prompt. Optional
-// `userTimeZone` is injected from the client so the model can reason about
-// local time; that prefix varies per user. If you need the server UTC clock
-// in-prompt, use the `dynamic` flag — but that disables some caching of the
-// system block.
-function buildSystemPrompt(opts: { dynamic?: boolean; userTimeZone?: string | null } = {}): string {
-  const date = opts.dynamic ? `The current date and time is ${new Date().toUTCString()}.\n\n` : "";
-  const tz = opts.userTimeZone?.trim();
-  const tzLine = tz
-    ? `The user's local timezone is ${tz} (IANA). Use it when interpreting "today", "this morning", evening vs afternoon, scheduling, deadlines, and anything that depends on what time it is for them.\n\n`
-    : "";
-  return `${date}${tzLine}You're talking to someone who's busy and smart and doesn't want to be sold to. You're their sharp friend who happens to be good with their tools — not a feature page, not a help desk, not an AI assistant doing AI assistant things.
-
-They are using this app on a Mac (macOS). Default to Mac-specific guidance: menu bar, System Settings, Finder, standard macOS shortcuts, and Mac app names — unless they clearly say they're on something else.
-
-# How you talk
-Like a person. Contractions. Short sentences when short sentences work. Longer when the thought needs room. You crack jokes when something is genuinely funny, not because the script says "be funny here." Dry asides land better than try-hard ones. You read the room — if they're frustrated, drop the bit. If they're casual, ride it. Spanish, English, Spanglish, all fine, follow their lead.
-
-# What you don't do
-You don't bullet-list things at people. You don't write headers. You don't say "I can help with a bunch of things!" and then itemize your features like a SaaS landing page — that's the exact tone you're replacing. If someone asks "what can you do," answer like a friend would: give them a flavor of it in one or two sentences and ask what they're actually trying to get done. Nobody wants a menu, they want a conversation.
-
-You don't say "Great question!" You don't say "I'd be happy to help!" You don't summarize their question back at them before answering. You don't end every message asking if there's anything else. Just talk to them.
-
-# Tools
-You can poke around in their email, calendar, Stripe, etc. When you're about to use one, say what you're doing in a quick natural sentence — "lemme peek at your calendar," "checking your inbox," "one sec, pulling up your last invoice" — then do it. Don't say the tool name, just say what you're doing. After it comes back, give them the answer.
-
-You also have an internal memory retrieval tool called \`search_chat_memory\`. It's for RAG over this app's prior chat messages only (their earlier user/assistant turns). It is NOT an email or internet search tool. Use it whenever the user asks to recall earlier context from this chat history.
-
-If they ask what you can do, don't list tools. Say something like "depends — what's bugging you?" or "honestly easier if you just tell me what you need." Then react to what they actually want.
-
-# Pointing at things on their screen
-You also have a tool called \`take_screenshot\`. Call it whenever the user asks for help finding, opening, navigating, or activating something on THEIR computer's UI — "how do I turn on dark mode," "where's the share button," "open System Settings privacy," "find the bookmark menu," etc. The app will capture their screen, locate the element you describe, and fly a small on-screen pointer to it. Before calling, drop one short natural sentence like "lemme show you" or "one sec, pointing it out" — never name the tool. Pass a tight, specific \`description\` of what to point at (e.g. "the Apple menu in the top-left", "the Dark Mode toggle in System Settings → Appearance"). After the tool returns, briefly say what they should click or do next. Don't use this for things that aren't a UI element on screen.
-
-# Substance
-Lead with the answer. Reasoning after, if it's useful. If they're wrong, tell them, kindly. If you're not sure, say so — pretending to know is worse than admitting a gap. Be brief by default; expand when the topic earns it. Markdown formatting (headers, bullet lists, bold) is for documents, not conversations — avoid it unless the user is clearly asking for a structured output.`;
-}
-
 // ─── Built-in tools ───────────────────────────────────────────────────────────
 //
 // Tools we implement ourselves (not via Composio). The model sees them in the
@@ -278,6 +249,8 @@ Lead with the answer. Reasoning after, if it's useful. If they're wrong, tell th
 const TAKE_SCREENSHOT_NAME = "take_screenshot";
 const SEARCH_CHAT_MEMORY_NAME = "search_chat_memory";
 const SEARCH_MESSAGES_LEGACY_ALIAS = "search_messages";
+const RECALL_USER_MEMORIES_NAME = "recall_user_memories";
+const RECALL_CONVERSATION_SUMMARY_NAME = "recall_conversation_summary";
 
 const TAKE_SCREENSHOT_DESCRIPTION =
   "Capture the user's current screen and visually point them to a specific UI element with a small flying blue arrow. " +
@@ -319,6 +292,53 @@ const SEARCH_CHAT_MEMORY_INPUT_SCHEMA = {
   required: ["query"],
 } as const;
 
+const RECALL_USER_MEMORIES_DESCRIPTION =
+  "Semantic search over distilled long-term memories about the user (facts, preferences, " +
+  "relationships, projects, goals, skills). Use whenever knowing something durable about " +
+  "the user would help. Pass `query` as a natural-language description of what you want " +
+  "to recall (e.g. 'where the user lives', 'their dietary preferences', 'their partner's name'). " +
+  "Returns the most relevant memories with confidence and importance scores. Internal RAG only.";
+
+const RECALL_USER_MEMORIES_INPUT_SCHEMA = {
+  type: "object",
+  properties: {
+    query: {
+      type: "string",
+      description:
+        "Natural-language description of the kind of memory you're trying to recall.",
+    },
+    limit: {
+      type: "number",
+      description: "Optional number of memories to return (1-20).",
+    },
+  },
+  required: ["query"],
+} as const;
+
+const RECALL_CONVERSATION_SUMMARY_DESCRIPTION =
+  "Semantic search over summaries of the user's past conversations with you. Each summary " +
+  "covers a previous chat (decisions, preferences, unresolved items). Use when the user " +
+  "references an earlier chat, or when broader background than search_chat_memory is " +
+  "useful. Pass `query` describing what context you need; pass an empty string (or omit) " +
+  "to retrieve the most recent summaries. Internal RAG only.";
+
+const RECALL_CONVERSATION_SUMMARY_INPUT_SCHEMA = {
+  type: "object",
+  properties: {
+    query: {
+      type: "string",
+      description:
+        "Natural-language description of the conversation context you're trying to find. " +
+        "Empty string or omitted = return the most recent summaries.",
+    },
+    limit: {
+      type: "number",
+      description: "Optional number of summaries to return (1-10).",
+    },
+  },
+  required: [],
+} as const;
+
 // Synthetic tool result we return to the model after a take_screenshot call.
 // The actual screenshot capture + element location happens on the client,
 // out of band; the model doesn't need the result in its conversation context,
@@ -332,47 +352,51 @@ function isBuiltInToolName(name: string): boolean {
   return (
     name === TAKE_SCREENSHOT_NAME ||
     name === SEARCH_CHAT_MEMORY_NAME ||
-    name === SEARCH_MESSAGES_LEGACY_ALIAS
+    name === SEARCH_MESSAGES_LEGACY_ALIAS ||
+    name === RECALL_USER_MEMORIES_NAME ||
+    name === RECALL_CONVERSATION_SUMMARY_NAME
   );
 }
 
+// We type these helpers against the full ActionCtx so that the typed
+// FunctionReference call sites below stay strict.
+type BuiltInToolCtx = Pick<ActionCtx, "runAction" | "runQuery">;
+
+function clampLimit(raw: unknown, max: number): number | undefined {
+  if (typeof raw !== "number" || !Number.isFinite(raw)) return undefined;
+  return Math.min(Math.max(1, Math.floor(raw)), max);
+}
+
+async function embedQueryText(ctx: BuiltInToolCtx, text: string): Promise<number[]> {
+  const result = await ctx.runAction(internal.messageEmbeddings.embedText, { text });
+  if (!Array.isArray(result)) {
+    throw new Error("embedText did not return an array");
+  }
+  return result as number[];
+}
+
 async function executeSearchMessagesTool(
-  ctx: {
-    runAction: (
-      ref: typeof internal.messageEmbeddings.embedText,
-      args: { text: string }
-    ) => Promise<number[]>;
-    runQuery: (
-      ref: typeof internal.messageRag.searchMessagesByEmbedding,
-      args: {
-        clerkUserId: string;
-        queryEmbedding: number[];
-        limit?: number;
-      }
-    ) => Promise<unknown>;
-  },
+  ctx: BuiltInToolCtx,
   input: Record<string, unknown>,
-  entityId: string
+  entityId: string,
 ): Promise<unknown> {
   const query = typeof input.query === "string" ? input.query.trim() : "";
   if (!query) return { error: "search_chat_memory requires a non-empty `query`." };
   if (!entityId || entityId === "default") {
     return { error: "search_chat_memory requires a real `entityId` for user scoping." };
   }
-  const rawLimit = input.limit;
-  const limit =
-    typeof rawLimit === "number" && Number.isFinite(rawLimit)
-      ? Math.min(Math.max(1, Math.floor(rawLimit)), 20)
-      : undefined;
+  const limit = clampLimit(input.limit, 20);
 
-  const queryEmbedding = await ctx.runAction(internal.messageEmbeddings.embedText, {
-    text: query,
-  });
-  const resultsUnknown = await ctx.runQuery(internal.messageRag.searchMessagesByEmbedding, {
-    clerkUserId: entityId,
-    queryEmbedding,
-    ...(limit !== undefined ? { limit } : {}),
-  });
+  const queryEmbedding = await embedQueryText(ctx, query);
+
+  const resultsUnknown = await ctx.runQuery(
+    internal.messageRag.searchMessagesByEmbedding,
+    {
+      clerkUserId: entityId,
+      queryEmbedding,
+      ...(limit !== undefined ? { limit } : {}),
+    },
+  );
   const results = Array.isArray(resultsUnknown) ? resultsUnknown : [];
 
   return {
@@ -383,24 +407,100 @@ async function executeSearchMessagesTool(
   };
 }
 
+async function executeRecallUserMemoriesTool(
+  ctx: ActionCtx,
+  input: Record<string, unknown>,
+  entityId: string,
+): Promise<unknown> {
+  const query = typeof input.query === "string" ? input.query.trim() : "";
+  if (!query) return { error: "recall_user_memories requires a non-empty `query`." };
+  if (!entityId || entityId === "default") {
+    return { error: "recall_user_memories requires a real `entityId` for user scoping." };
+  }
+  const limit = clampLimit(input.limit, 20);
+
+  const queryEmbedding = await embedQueryText(ctx, query);
+
+  const results = await searchMemoriesViaVectorIndex(ctx, {
+    clerkUserId: entityId,
+    queryEmbedding,
+    ...(limit !== undefined ? { limit } : {}),
+  });
+
+  return {
+    tool: RECALL_USER_MEMORIES_NAME,
+    query,
+    total: results.length,
+    // Strip raw scores/memory ids before sending to the model — it just
+    // needs the content.
+    results: results.map((r) => ({
+      kind: r.kind,
+      content: r.content,
+      confidence: r.confidence,
+      importance: r.importance,
+      updatedAt: r.updatedAt,
+    })),
+  };
+}
+
+async function executeRecallConversationSummaryTool(
+  ctx: ActionCtx,
+  input: Record<string, unknown>,
+  entityId: string,
+): Promise<unknown> {
+  if (!entityId || entityId === "default") {
+    return {
+      error: "recall_conversation_summary requires a real `entityId` for user scoping.",
+    };
+  }
+  const query = typeof input.query === "string" ? input.query.trim() : "";
+  const limit = clampLimit(input.limit, 10);
+
+  if (query.length === 0) {
+    const recentUnknown = await ctx.runQuery(
+      internal.distillation.getRecentConversationSummariesForClerkUser,
+      {
+        clerkUserId: entityId,
+        ...(limit !== undefined ? { limit } : {}),
+      },
+    );
+    const recent = Array.isArray(recentUnknown) ? recentUnknown : [];
+    return {
+      tool: RECALL_CONVERSATION_SUMMARY_NAME,
+      mode: "recent",
+      total: recent.length,
+      results: (recent as Array<Record<string, unknown>>).map((r) => ({
+        summary: r.summary,
+        _creationTime: r._creationTime,
+      })),
+    };
+  }
+
+  const queryEmbedding = await embedQueryText(ctx, query);
+
+  const results = await searchConversationSummariesViaVectorIndex(ctx, {
+    clerkUserId: entityId,
+    queryEmbedding,
+    ...(limit !== undefined ? { limit } : {}),
+  });
+
+  return {
+    tool: RECALL_CONVERSATION_SUMMARY_NAME,
+    mode: "search",
+    query,
+    total: results.length,
+    results: results.map((r) => ({
+      summary: r.summary,
+      _creationTime: r._creationTime,
+    })),
+  };
+}
+
 async function executeBuiltInTool(
-  ctx: {
-    runAction: (
-      ref: typeof internal.messageEmbeddings.embedText,
-      args: { text: string }
-    ) => Promise<number[]>;
-    runQuery: (
-      ref: typeof internal.messageRag.searchMessagesByEmbedding,
-      args: {
-        clerkUserId: string;
-        queryEmbedding: number[];
-        limit?: number;
-      }
-    ) => Promise<unknown>;
-  },
+  ctx: ActionCtx,
   name: string,
   input: Record<string, unknown>,
-  entityId: string
+  entityId: string,
 ): Promise<unknown> {
   if (name === TAKE_SCREENSHOT_NAME) {
     return JSON.parse(TAKE_SCREENSHOT_TOOL_RESULT);
@@ -408,7 +508,41 @@ async function executeBuiltInTool(
   if (name === SEARCH_CHAT_MEMORY_NAME || name === SEARCH_MESSAGES_LEGACY_ALIAS) {
     return await executeSearchMessagesTool(ctx, input, entityId);
   }
+  if (name === RECALL_USER_MEMORIES_NAME) {
+    return await executeRecallUserMemoriesTool(ctx, input, entityId);
+  }
+  if (name === RECALL_CONVERSATION_SUMMARY_NAME) {
+    return await executeRecallConversationSummaryTool(ctx, input, entityId);
+  }
   return { error: `Unknown built-in tool: ${name}` };
+}
+
+// Helper to fetch the past N conversation summaries for a Clerk user id
+// so the MCP routes can inject them into the system prompt. Failures are
+// swallowed (returns []) — these are background context, not a blocker
+// for chat. Since the call is a query, no embeddings or OpenAI calls.
+async function fetchPastConversationSummariesForPrompt(
+  ctx: BuiltInToolCtx,
+  entityId: string | undefined,
+  limit = 3,
+): Promise<PastConversationSummary[]> {
+  if (!entityId || entityId === "default") return [];
+  try {
+    const recentUnknown = await ctx.runQuery(
+      internal.distillation.getRecentConversationSummariesForClerkUser,
+      { clerkUserId: entityId, limit },
+    );
+    if (!Array.isArray(recentUnknown)) return [];
+    return (recentUnknown as Array<Record<string, unknown>>)
+      .map((r) => ({
+        summary: typeof r.summary === "string" ? r.summary : "",
+        _creationTime: typeof r._creationTime === "number" ? r._creationTime : 0,
+      }))
+      .filter((s) => s.summary.length > 0);
+  } catch (err) {
+    console.error("[chat] failed to load past conversation summaries:", err);
+    return [];
+  }
 }
 
 const COMPOSIO_BASE = "https://backend.composio.dev";
@@ -568,6 +702,16 @@ function buildGeminiTools(rawTools: ComposioTool[]): unknown[] {
       description: SEARCH_CHAT_MEMORY_DESCRIPTION,
       parameters: SEARCH_CHAT_MEMORY_INPUT_SCHEMA as unknown as Record<string, unknown>,
     },
+    {
+      name: RECALL_USER_MEMORIES_NAME,
+      description: RECALL_USER_MEMORIES_DESCRIPTION,
+      parameters: RECALL_USER_MEMORIES_INPUT_SCHEMA as unknown as Record<string, unknown>,
+    },
+    {
+      name: RECALL_CONVERSATION_SUMMARY_NAME,
+      description: RECALL_CONVERSATION_SUMMARY_DESCRIPTION,
+      parameters: RECALL_CONVERSATION_SUMMARY_INPUT_SCHEMA as unknown as Record<string, unknown>,
+    },
   ];
   const composio = rawTools.map((t) => ({
     name: t.slug,
@@ -603,13 +747,23 @@ async function runGeminiTurnStreaming(
   toolsPayload: unknown[] | null,
   controller: ReadableStreamDefaultController<Uint8Array>,
   encoder: TextEncoder,
-  userTimeZone?: string
+  userTimeZone?: string,
+  pastConversationSummaries?: PastConversationSummary[] | null,
 ): Promise<{
   functionCallsRaw: Record<string, unknown>[];
   usage: { tokensIn: number; tokensOut: number };
 }> {
   const body: Record<string, unknown> = {
-    systemInstruction: { parts: [{ text: buildSystemPrompt({ userTimeZone }) }] },
+    systemInstruction: {
+      parts: [
+        {
+          text: buildSystemPrompt({
+            userTimeZone,
+            pastConversationSummaries,
+          }),
+        },
+      ],
+    },
     contents,
     generationConfig: { temperature: 0.7, maxOutputTokens: 4096 },
   };
@@ -714,9 +868,14 @@ const handleGoogleMCPChat = httpAction(async (ctx, request) => {
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       try {
-        const rawTools = await fetchComposioTools(entityId).catch(() => [] as ComposioTool[]);
+        const [rawTools, pastSummaries] = await Promise.all([
+          fetchComposioTools(entityId).catch(() => [] as ComposioTool[]),
+          fetchPastConversationSummariesForPrompt(ctx, entityId, 3),
+        ]);
         const geminiTools = buildGeminiTools(rawTools);
-        console.log(`[/chat/google-mcp] Composio tools: ${rawTools.length}`);
+        console.log(
+          `[/chat/google-mcp] Composio tools: ${rawTools.length}, past summaries: ${pastSummaries.length}`,
+        );
 
         const contents: GeminiContent[] = [
           ...history.map((m) => ({
@@ -737,7 +896,8 @@ const handleGoogleMCPChat = httpAction(async (ctx, request) => {
             geminiTools.length > 0 ? geminiTools : null,
             controller,
             encoder,
-            userTz
+            userTz,
+            pastSummaries,
           );
           totalTokensIn += usage.tokensIn;
           totalTokensOut += usage.tokensOut;
@@ -1044,7 +1204,10 @@ const handleAnthropicMCPChat = httpAction(async (ctx, request) => {
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       try {
-        const rawTools = await fetchComposioTools(entityId).catch(() => [] as ComposioTool[]);
+        const [rawTools, pastSummaries] = await Promise.all([
+          fetchComposioTools(entityId).catch(() => [] as ComposioTool[]),
+          fetchPastConversationSummariesForPrompt(ctx, entityId, 3),
+        ]);
         // Build the tool list. Built-in tools (e.g. take_screenshot) are
         // always available; Composio tools are appended after them.
         const builtInAnthropicTools: Array<Record<string, unknown>> = [
@@ -1057,6 +1220,16 @@ const handleAnthropicMCPChat = httpAction(async (ctx, request) => {
             name: SEARCH_CHAT_MEMORY_NAME,
             description: SEARCH_CHAT_MEMORY_DESCRIPTION,
             input_schema: SEARCH_CHAT_MEMORY_INPUT_SCHEMA as unknown as Record<string, unknown>,
+          },
+          {
+            name: RECALL_USER_MEMORIES_NAME,
+            description: RECALL_USER_MEMORIES_DESCRIPTION,
+            input_schema: RECALL_USER_MEMORIES_INPUT_SCHEMA as unknown as Record<string, unknown>,
+          },
+          {
+            name: RECALL_CONVERSATION_SUMMARY_NAME,
+            description: RECALL_CONVERSATION_SUMMARY_DESCRIPTION,
+            input_schema: RECALL_CONVERSATION_SUMMARY_INPUT_SCHEMA as unknown as Record<string, unknown>,
           },
         ];
 
@@ -1088,7 +1261,10 @@ const handleAnthropicMCPChat = httpAction(async (ctx, request) => {
         const systemBlocks = [
           {
             type: "text" as const,
-            text: buildSystemPrompt({ userTimeZone: userTz }),
+            text: buildSystemPrompt({
+              userTimeZone: userTz,
+              pastConversationSummaries: pastSummaries,
+            }),
             cache_control: { type: "ephemeral" as const },
           },
         ];
@@ -1217,7 +1393,10 @@ const handleOpenAIToolsChat = httpAction(async (ctx, request) => {
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       try {
-        const rawTools = await fetchComposioTools(entityId).catch(() => [] as ComposioTool[]);
+        const [rawTools, pastSummaries] = await Promise.all([
+          fetchComposioTools(entityId).catch(() => [] as ComposioTool[]),
+          fetchPastConversationSummariesForPrompt(ctx, entityId, 3),
+        ]);
         const builtInOpenAITools = [
           {
             type: "function" as const,
@@ -1235,6 +1414,22 @@ const handleOpenAIToolsChat = httpAction(async (ctx, request) => {
               parameters: SEARCH_CHAT_MEMORY_INPUT_SCHEMA as unknown as Record<string, unknown>,
             },
           },
+          {
+            type: "function" as const,
+            function: {
+              name: RECALL_USER_MEMORIES_NAME,
+              description: RECALL_USER_MEMORIES_DESCRIPTION,
+              parameters: RECALL_USER_MEMORIES_INPUT_SCHEMA as unknown as Record<string, unknown>,
+            },
+          },
+          {
+            type: "function" as const,
+            function: {
+              name: RECALL_CONVERSATION_SUMMARY_NAME,
+              description: RECALL_CONVERSATION_SUMMARY_DESCRIPTION,
+              parameters: RECALL_CONVERSATION_SUMMARY_INPUT_SCHEMA as unknown as Record<string, unknown>,
+            },
+          },
         ];
         const composioOpenAITools = rawTools.map((t) => ({
           type: "function" as const,
@@ -1248,10 +1443,19 @@ const handleOpenAIToolsChat = httpAction(async (ctx, request) => {
           },
         }));
         const openaiTools = [...builtInOpenAITools, ...composioOpenAITools];
-        console.log(`[/chat/openai-tools] ${openaiTools.length} tools:`, openaiTools.map((t) => t.function.name));
+        console.log(
+          `[/chat/openai-tools] ${openaiTools.length} tools, past summaries: ${pastSummaries.length}`,
+          openaiTools.map((t) => t.function.name),
+        );
 
         const messages: OpenAIMessage[] = [
-          { role: "system", content: buildSystemPrompt({ userTimeZone: userTz }) },
+          {
+            role: "system",
+            content: buildSystemPrompt({
+              userTimeZone: userTz,
+              pastConversationSummaries: pastSummaries,
+            }),
+          },
           ...history.map((m) => ({ role: m.role as "user" | "assistant", content: m.content, tool_calls: undefined })),
           { role: "user", content: message },
         ];

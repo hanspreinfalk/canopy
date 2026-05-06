@@ -1,5 +1,6 @@
 import { httpRouter } from "convex/server";
 import { httpAction } from "../_generated/server";
+import { SCREENSHOT_LOCATE_SYSTEM_PROMPT } from "../systemPrompts";
 
 type HttpRouter = ReturnType<typeof httpRouter>;
 
@@ -39,21 +40,6 @@ type LocateOk = {
 };
 type LocateMiss = { found: false; reason: string; raw?: string };
 
-const SYSTEM_PROMPT = `You are a precise UI element locator. Given a screenshot and a description of an on-screen UI element, return the pixel center of that element.
-
-Reply with EXACTLY ONE line, in one of these two formats and nothing else:
-
-  [POINT:x,y:label]
-  [POINT:none]
-
-Rules:
-- x and y are integer pixel coordinates in the screenshot's coordinate space, top-left origin.
-- 0 <= x < imageWidth, 0 <= y < imageHeight (the user gives you these dimensions).
-- label is a short human-readable name for what you pointed at (<=40 chars). No commas, no brackets.
-- Use [POINT:none] if you cannot locate the element with confidence, or if it is not visible on screen.
-- Do NOT include explanation, prose, code blocks, markdown, or anything else outside the single tag.
-- Aim for the visual center of the clickable target, not its label or surrounding container.`;
-
 const handleScreenshotLocate = httpAction(async (_ctx, request) => {
   let body: LocateRequest;
   try {
@@ -83,7 +69,7 @@ const handleScreenshotLocate = httpAction(async (_ctx, request) => {
   const requestBody = {
     model: "claude-sonnet-4-6",
     max_tokens: 128,
-    system: SYSTEM_PROMPT,
+    system: SCREENSHOT_LOCATE_SYSTEM_PROMPT,
     messages: [
       {
         role: "user",

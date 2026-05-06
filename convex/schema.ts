@@ -49,17 +49,17 @@ export default defineSchema({
         lastMessageAt: v.number(),
         messageCount: v.number(),
 
-        // Rolling summary
-        summary: v.optional(v.string()),
-        summaryUpdatedAt: v.optional(v.number()),
-        embeddingSummary: v.optional(v.array(v.float64())),
+        // Distillation tracking. pendingDistillationJobId is the in-flight
+        // scheduled function distillation will run; saveMessage cancels +
+        // reschedules it on every new user message. lastDistilledThroughTime
+        // is the water mark of the latest message _creationTime included in
+        // a completed distillation, used to keep reruns idempotent. The
+        // current/historical summaries themselves live in the
+        // `conversationSummaries` table, not on this row.
+        pendingDistillationJobId: v.optional(v.id("_scheduled_functions")),
+        lastDistilledThroughTime: v.optional(v.number()),
     })
     .index("by_user_id", ["userId"])
-    .vectorIndex("by_embedding_summary", {
-      vectorField: "embeddingSummary",
-      dimensions: 1536,
-      filterFields: ["userId"],
-    })
     ,
     // ─────────────────────────────────────────────────────────────
     // MESSAGES
@@ -161,11 +161,15 @@ export default defineSchema({
     ,
     distillationJobs: defineTable({
         userId: v.id("users"),
+        // Optional for legacy rows; new rows always include the conversation
+        // they distilled.
+        conversationId: v.optional(v.id("conversations")),
         status: v.union(
             v.literal("pending"),
             v.literal("running"),
             v.literal("done"),
-            v.literal("failed")
+            v.literal("failed"),
+            v.literal("skipped")
         ),
 
         // Time window of messages this job processed
@@ -175,9 +179,39 @@ export default defineSchema({
         messagesProcessed: v.number(),
         memoriesCreated: v.number(),
         memoriesSuperseded: v.number(),
+        summaryUpdated: v.optional(v.boolean()),
 
         error: v.optional(v.string()),
+        skipReason: v.optional(v.string()),
         completedAt: v.optional(v.number())
     })
     .index("by_user_id", ["userId"])
+    .index("by_conversation_id", ["conversationId"])
+    ,
+    // ─────────────────────────────────────────────────────────────
+    // CONVERSATION SUMMARIES (history of distilled summaries)
+    // ─────────────────────────────────────────────────────────────
+    // A new row is appended every time distillation produces a fresh
+    // summary for a conversation. The most recent row per conversation is
+    // the "current" summary; older rows are kept for history. Use the
+    // built-in `_creationTime` for ordering. The vector index lets the AI
+    // retrieve the most relevant summary across all of the user's past
+    // conversations.
+    conversationSummaries: defineTable({
+        userId: v.id("users"),
+        conversationId: v.id("conversations"),
+        summary: v.string(),
+        embedding: v.optional(v.array(v.float64())),
+
+        // Water mark for the latest message _creationTime included in this
+        // summary. Used by distillation to confirm idempotent reruns.
+        messagesProcessedThroughTime: v.number(),
+    })
+    .index("by_user_id", ["userId"])
+    .index("by_conversation_id", ["conversationId"])
+    .vectorIndex("by_embedding", {
+        vectorField: "embedding",
+        dimensions: 1536,
+        filterFields: ["userId", "conversationId"],
+    })
 });

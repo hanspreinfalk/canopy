@@ -37,10 +37,11 @@ final class ElevenLabsTTSClient: NSObject {
 
         let body: [String: Any] = [
             "text": text,
+            // Flash v2.5: lowest generation latency (~75ms cited by ElevenLabs, excluding network).
+            // Use `eleven_multilingual_v2` when quality beats responsiveness.
             "model_id": "eleven_flash_v2_5",
-            // 0…4; higher values reduce time-to-first-byte at small quality cost.
-            // Useful even for non-streaming endpoints since it gates internal buffering.
-            "optimize_streaming_latency": 3,
+            // 0…4; higher = faster time-to-first-byte (slightly lower audio fidelity).
+            "optimize_streaming_latency": 4,
             "voice_settings": ["stability": 0.5, "similarity_boost": 0.75]
         ]
         request.httpBody = try JSONSerialization.data(withJSONObject: body)

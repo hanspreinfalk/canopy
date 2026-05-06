@@ -10,6 +10,8 @@
 
 import type * as conversationTitleGeneration from "../conversationTitleGeneration.js";
 import type * as conversations from "../conversations.js";
+import type * as distillation from "../distillation.js";
+import type * as distillationActions from "../distillationActions.js";
 import type * as http from "../http.js";
 import type * as messageEmbeddings from "../messageEmbeddings.js";
 import type * as messageEmbeddingsDb from "../messageEmbeddingsDb.js";
@@ -21,6 +23,7 @@ import type * as routes_composio from "../routes/composio.js";
 import type * as routes_screenshot from "../routes/screenshot.js";
 import type * as routes_transcribe from "../routes/transcribe.js";
 import type * as routes_tts from "../routes/tts.js";
+import type * as systemPrompts from "../systemPrompts.js";
 import type * as users from "../users.js";
 
 import type {
@@ -32,6 +35,8 @@ import type {
 declare const fullApi: ApiFromModules<{
   conversationTitleGeneration: typeof conversationTitleGeneration;
   conversations: typeof conversations;
+  distillation: typeof distillation;
+  distillationActions: typeof distillationActions;
   http: typeof http;
   messageEmbeddings: typeof messageEmbeddings;
   messageEmbeddingsDb: typeof messageEmbeddingsDb;
@@ -43,6 +48,7 @@ declare const fullApi: ApiFromModules<{
   "routes/screenshot": typeof routes_screenshot;
   "routes/transcribe": typeof routes_transcribe;
   "routes/tts": typeof routes_tts;
+  systemPrompts: typeof systemPrompts;
   users: typeof users;
 }>;
 
