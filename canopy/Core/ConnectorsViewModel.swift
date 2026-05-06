@@ -8,12 +8,7 @@ import Foundation
 import Combine
 import ClerkKit
 
-// v3 toolkits response: { slug, name, meta: { logo, description } }
-private struct ComposioAppMeta: Decodable {
-    let logo: String?
-    let description: String?
-}
-
+// v3 toolkits: logo may be on toolkit root, in meta.logo (string or size map), or alternate keys.
 struct ComposioApp: Identifiable, Decodable {
     var id: String { slug }
     let slug: String
@@ -21,15 +16,64 @@ struct ComposioApp: Identifiable, Decodable {
     let logo: String?
     let description: String?
 
-    private enum CodingKeys: String, CodingKey { case slug, name, meta }
+    private enum CodingKeys: String, CodingKey {
+        case slug, name, meta, logo
+    }
+
+    private enum MetaKeys: String, CodingKey {
+        case description
+        case logo, icon, image
+        case logoURL = "logo_url"
+    }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         slug = try c.decode(String.self, forKey: .slug)
         name = try c.decode(String.self, forKey: .name)
-        let meta = try? c.decode(ComposioAppMeta.self, forKey: .meta)
-        logo = meta?.logo
-        description = meta?.description
+
+        let rootLogo = Self.flexibleLogoString(from: c, key: .logo)
+        var metaDescription: String?
+        var metaLogo: String?
+
+        if let meta = try? c.nestedContainer(keyedBy: MetaKeys.self, forKey: .meta) {
+            metaDescription = try meta.decodeIfPresent(String.self, forKey: .description)
+            metaLogo = Self.logoFromMetaContainer(meta)
+        }
+
+        logo = Self.firstNonEmpty(rootLogo, metaLogo)
+        description = metaDescription
+    }
+
+    private static func firstNonEmpty(_ a: String?, _ b: String?) -> String? {
+        if let a, !a.isEmpty { return a }
+        if let b, !b.isEmpty { return b }
+        return nil
+    }
+
+    /// Decode `logo` as a URL string, or as a map of size/name → URL (Composio sometimes uses the latter).
+    private static func flexibleLogoString<Key: CodingKey>(
+        from container: KeyedDecodingContainer<Key>,
+        key: Key
+    ) -> String? {
+        guard container.contains(key) else { return nil }
+        if let s = try? container.decode(String.self, forKey: key), !s.isEmpty { return s }
+        if let dict = try? container.decode([String: String].self, forKey: key) {
+            let v =
+                dict["default"]
+                ?? dict["light"]
+                ?? dict["dark"]
+                ?? dict["url"]
+                ?? dict.values.first(where: { !$0.isEmpty })
+            if let v, !v.isEmpty { return v }
+        }
+        return nil
+    }
+
+    private static func logoFromMetaContainer(_ meta: KeyedDecodingContainer<MetaKeys>) -> String? {
+        for key in [MetaKeys.logo, .icon, .image, .logoURL] {
+            if let s = flexibleLogoString(from: meta, key: key) { return s }
+        }
+        return nil
     }
 }
 

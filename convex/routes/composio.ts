@@ -12,21 +12,82 @@ function apiHeaders() {
   };
 }
 
+type ComposioAuthConfigError = {
+  message?: string;
+  code?: number;
+  slug?: string;
+  suggested_fix?: string;
+};
+
+/** Maps Composio auth_config create failures to a short message for the client alert. */
+function formatAuthConfigCreateError(parsed: {
+  error?: ComposioAuthConfigError;
+  auth_config?: { id: string };
+  id?: string;
+}, rawBody: string): string {
+  const err = parsed.error;
+  if (
+    err?.slug === "Auth_Config_DefaultAuthConfigNotFound" ||
+    err?.code === 306
+  ) {
+    return (
+      "This connector doesn’t support Composio’s built-in sign-in. " +
+      "In the Composio dashboard, create an auth config for this toolkit with your own OAuth app (custom credentials), then try again or pick another connector."
+    );
+  }
+  if (err?.message) {
+    const parts = [err.message.trim()];
+    if (err.suggested_fix?.trim()) {
+      parts.push(err.suggested_fix.trim());
+    }
+    return parts.join(" ");
+  }
+  return rawBody.length > 400 ? `${rawBody.slice(0, 400)}…` : rawBody;
+}
+
+type ToolkitsPage = {
+  items?: unknown[];
+  next_cursor?: string | null;
+  nextCursor?: string | null;
+};
+
 // GET /composio/apps — list available toolkits (apps)
 const handleGetApps = httpAction(async (_ctx, _request) => {
-  const response = await fetch(`${BASE}/api/v3/toolkits?limit=100`, {
-    headers: apiHeaders(),
-  });
-  if (!response.ok) {
-    const text = await response.text();
-    console.error(`[composio/apps] ${response.status}:`, text.slice(0, 300));
-    return new Response(JSON.stringify({ error: `Composio ${response.status}` }), {
-      status: response.status,
-      headers: { "content-type": "application/json" },
-    });
+  const items: unknown[] = [];
+  let cursor: string | undefined;
+  // Composio paginates with `cursor` / `next_cursor`; merge all pages for the client.
+  const pageLimit = 1000;
+  const maxPages = 500;
+
+  for (let i = 0; i < maxPages; i++) {
+    const url = new URL(`${BASE}/api/v3/toolkits`);
+    url.searchParams.set("limit", String(pageLimit));
+    if (cursor) url.searchParams.set("cursor", cursor);
+
+    const response = await fetch(url.toString(), { headers: apiHeaders() });
+    if (!response.ok) {
+      const text = await response.text();
+      console.error(`[composio/apps] ${response.status}:`, text.slice(0, 300));
+      return new Response(JSON.stringify({ error: `Composio ${response.status}` }), {
+        status: response.status,
+        headers: { "content-type": "application/json" },
+      });
+    }
+
+    const data = (await response.json()) as ToolkitsPage;
+    if (Array.isArray(data.items) && data.items.length > 0) {
+      items.push(...data.items);
+    }
+
+    const next = data.next_cursor ?? data.nextCursor ?? undefined;
+    if (!next || next === cursor) {
+      break;
+    }
+    cursor = next;
   }
-  const data = await response.json();
-  return new Response(JSON.stringify(data), {
+
+  console.log(`[composio/apps] fetched ${items.length} toolkits`);
+  return new Response(JSON.stringify({ items }), {
     status: 200,
     headers: { "content-type": "application/json" },
   });
@@ -75,23 +136,41 @@ const handleConnect = httpAction(async (_ctx, request) => {
     authConfigId = listData.items?.[0]?.auth_config?.id;
   }
 
-  // 2. If none exists, create a Composio-managed one
+  // 2. If none exists, create a Composio-managed auth config (documented body shape).
   if (!authConfigId) {
     const createResp = await fetch(`${BASE}/api/v3.1/auth_configs`, {
       method: "POST",
       headers: apiHeaders(),
-      body: JSON.stringify({ toolkit: { slug: toolkitSlug } }),
+      body: JSON.stringify({
+        toolkit: { slug: toolkitSlug },
+        auth_config: {
+          type: "use_composio_managed_auth",
+          credentials: {},
+          restrict_to_following_tools: [],
+        },
+      }),
     });
-    const createData = (await createResp.json()) as {
+    const createText = await createResp.text();
+    let createData: unknown = {};
+    try {
+      createData = JSON.parse(createText) as object;
+    } catch {
+      createData = {};
+    }
+    const parsed = createData as {
       auth_config?: { id: string };
       id?: string;
+      error?: ComposioAuthConfigError;
     };
-    authConfigId = createData.auth_config?.id ?? createData.id;
+    authConfigId = parsed.auth_config?.id ?? parsed.id;
     if (!authConfigId) {
-      const err = JSON.stringify(createData);
-      console.error(`[composio/connect] no auth_config for ${toolkitSlug}:`, err);
-      return new Response(JSON.stringify({ error: `Could not create auth config: ${err}` }), {
-        status: 500,
+      const friendly = formatAuthConfigCreateError(parsed, createText);
+      console.error(
+        `[composio/connect] no auth_config for ${toolkitSlug} (${createResp.status}):`,
+        createText.slice(0, 600)
+      );
+      return new Response(JSON.stringify({ error: friendly }), {
+        status: createResp.status >= 400 && createResp.status < 600 ? createResp.status : 502,
         headers: { "content-type": "application/json" },
       });
     }

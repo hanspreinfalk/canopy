@@ -704,7 +704,12 @@ struct MainView: View {
             .padding(.top, 14)
             .padding(.bottom, 10)
 
-            if connectorsVM.apps.isEmpty && !connectorsVM.isLoading {
+            if connectorsVM.isLoading && connectorsVM.apps.isEmpty {
+                Spacer()
+                ProgressView()
+                    .controlSize(.small)
+                Spacer()
+            } else if connectorsVM.apps.isEmpty {
                 Spacer()
                 VStack(spacing: 12) {
                     Image(systemName: "point.3.connected.trianglepath.dotted")
@@ -757,21 +762,6 @@ struct MainView: View {
                     .padding(.vertical, 16)
                     .frame(maxWidth: .infinity)
                 }
-            }
-
-            if connectorsVM.hasConnections {
-                HStack(spacing: 6) {
-                    Image(systemName: "sparkles")
-                        .font(.system(size: 11))
-                        .foregroundColor(.primary.opacity(0.45))
-                    Text("Claude and OpenAI will use your connected apps when you chat.")
-                        .font(.system(size: 11))
-                        .foregroundColor(.secondary)
-                }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 10)
-                .frame(maxWidth: .infinity)
-                .background(Color.primary.opacity(0.06))
             }
         }
         .task {
@@ -1150,6 +1140,101 @@ private struct SidebarRow: View {
     }
 }
 
+// MARK: - Connector logos (cached; AsyncImage + LazyVGrid often drops loads)
+
+private final class ConnectorLogoCache {
+    static let shared = ConnectorLogoCache()
+    private let cache: NSCache<NSURL, NSImage> = {
+        let c = NSCache<NSURL, NSImage>()
+        c.countLimit = 400
+        return c
+    }()
+
+    func image(for url: URL) -> NSImage? {
+        cache.object(forKey: url as NSURL)
+    }
+
+    func insert(_ image: NSImage, for url: URL) {
+        cache.setObject(image, forKey: url as NSURL)
+    }
+}
+
+private struct ConnectorRemoteLogo: View {
+    let logoString: String?
+    let slug: String
+    let name: String
+
+    @State private var nsImage: NSImage?
+
+    private var resolvedURL: URL? {
+        guard let raw = logoString?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
+            return nil
+        }
+        var s = raw
+        if s.hasPrefix("//") {
+            s = "https:" + s
+        }
+        guard let url = URL(string: s) else { return nil }
+        let scheme = url.scheme?.lowercased() ?? ""
+        guard scheme == "http" || scheme == "https" else { return nil }
+        return url
+    }
+
+    var body: some View {
+        Group {
+            if let nsImage {
+                Image(nsImage: nsImage)
+                    .resizable()
+                    .scaledToFit()
+            } else {
+                ConnectorLogoPlaceholder(slug: slug, name: name)
+            }
+        }
+        .frame(width: 40, height: 40)
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .task(id: resolvedURL) {
+            await loadIfNeeded()
+        }
+    }
+
+    private func loadIfNeeded() async {
+        guard let url = resolvedURL else {
+            nsImage = nil
+            return
+        }
+        if let cached = ConnectorLogoCache.shared.image(for: url) {
+            nsImage = cached
+            return
+        }
+        do {
+            let (data, response) = try await URLSession.shared.data(from: url)
+            guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode),
+                  let img = NSImage(data: data), !data.isEmpty else {
+                return
+            }
+            ConnectorLogoCache.shared.insert(img, for: url)
+            nsImage = img
+        } catch {
+            // Keep placeholder
+        }
+    }
+}
+
+private struct ConnectorLogoPlaceholder: View {
+    let slug: String
+    let name: String
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: 8, style: .continuous)
+            .fill(Color.primary.opacity(0.08))
+            .overlay(
+                Text(String((name.isEmpty ? slug : name).prefix(1)).uppercased())
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundColor(.secondary)
+            )
+    }
+}
+
 // MARK: - Connector card
 
 private struct ConnectorCard: View {
@@ -1206,52 +1291,24 @@ private struct ConnectorCard: View {
     }
 
     private var appIcon: some View {
-        Group {
-            if let logoStr = app.logo, let url = URL(string: logoStr) {
-                AsyncImage(url: url) { phase in
-                    switch phase {
-                    case .success(let image):
-                        image
-                            .resizable()
-                            .scaledToFit()
-                            .frame(width: 40, height: 40)
-                    default:
-                        fallbackIcon
-                    }
-                }
-                .frame(width: 40, height: 40)
-                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-            } else {
-                fallbackIcon
-            }
-        }
-    }
-
-    private var fallbackIcon: some View {
-        RoundedRectangle(cornerRadius: 8, style: .continuous)
-            .fill(Color.primary.opacity(0.08))
-            .frame(width: 40, height: 40)
-            .overlay(
-                Text(String((app.name.isEmpty ? app.slug : app.name).prefix(1)).uppercased())
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundColor(.secondary)
-            )
+        ConnectorRemoteLogo(logoString: app.logo, slug: app.slug, name: app.name)
     }
 
     private var connectedBadge: some View {
-        HStack(spacing: 3) {
+        let darkGreen = Color(red: 0.11, green: 0.44, blue: 0.27)
+        return HStack(spacing: 4) {
             Circle()
-                .fill(Color.primary.opacity(0.45))
+                .fill(Color.white.opacity(0.9))
                 .frame(width: 5, height: 5)
             Text("Connected")
                 .font(.system(size: 9, weight: .semibold))
-                .foregroundColor(.secondary)
+                .foregroundColor(.white)
         }
-        .padding(.horizontal, 6)
-        .padding(.vertical, 3)
+        .padding(.horizontal, 7)
+        .padding(.vertical, 4)
         .background(
             RoundedRectangle(cornerRadius: 5, style: .continuous)
-                .fill(Color.primary.opacity(0.08))
+                .fill(darkGreen)
         )
     }
 
