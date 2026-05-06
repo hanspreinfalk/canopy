@@ -401,7 +401,10 @@ private struct Triangle: Shape {
 private struct GuideOverlayHost: View {
     @ObservedObject var state: GuideOverlayState
 
-    private static let triangleColor = Color(red: 0.20, green: 0.55, blue: 1.0)
+    /// Filled shapes (triangle + label capsule) — black per product request.
+    private static let pointerFill = Color.black
+    /// Soft halo so the black pointer reads on dark UI too.
+    private static let pointerHalo = Color.white.opacity(0.28)
 
     var body: some View {
         ZStack(alignment: .topLeading) {
@@ -420,8 +423,9 @@ private struct GuideOverlayHost: View {
                     .padding(.vertical, 7)
                     .background(
                         RoundedRectangle(cornerRadius: 10)
-                            .fill(Self.triangleColor)
+                            .fill(Self.pointerFill)
                     )
+                    .shadow(color: Self.pointerHalo, radius: 6, x: 0, y: 0)
                     .scaleEffect(state.labelScale, anchor: .topLeading)
                     .opacity(state.labelOpacity)
                     .position(x: state.current.x + 64, y: state.current.y - 14)
@@ -430,10 +434,10 @@ private struct GuideOverlayHost: View {
             }
 
             Triangle()
-                .fill(Self.triangleColor)
+                .fill(Self.pointerFill)
                 .frame(width: 18, height: 18)
                 .rotationEffect(.degrees(state.rotationDegrees))
-                .shadow(color: Self.triangleColor.opacity(0.85), radius: 10 + (state.scale - 1.0) * 16, x: 0, y: 0)
+                .shadow(color: Self.pointerHalo, radius: 10 + (state.scale - 1.0) * 16, x: 0, y: 0)
                 .scaleEffect(state.scale)
                 .opacity(state.opacity)
                 .position(state.current)

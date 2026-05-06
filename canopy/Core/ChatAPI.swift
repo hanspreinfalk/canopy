@@ -555,6 +555,7 @@ final class ChatAPI {
             "message": text,
             "model": modelName,
             "history": historyPayload,
+            "userTimeZone": TimeZone.current.identifier,
         ]
         if let entityId { body["entityId"] = entityId }
         request.httpBody = try JSONSerialization.data(withJSONObject: body)

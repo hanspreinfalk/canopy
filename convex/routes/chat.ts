@@ -12,8 +12,22 @@ type HttpRouter = ReturnType<typeof httpRouter>;
 // the text chunk out of its own event payload shape.
 
 type HistoryMessage = { role: "user" | "assistant"; content: string };
-type NormalizedChatRequest = { message: string; model?: string; history?: HistoryMessage[] };
+type NormalizedChatRequest = {
+  message: string;
+  model?: string;
+  history?: HistoryMessage[];
+  /** IANA timezone from the client, e.g. "America/Los_Angeles". */
+  userTimeZone?: string;
+};
 type MCPChatRequest = NormalizedChatRequest & { entityId?: string };
+
+function normalizedUserTimeZone(raw: unknown): string | undefined {
+  if (typeof raw !== "string") return undefined;
+  const t = raw.trim();
+  if (!t || t.length > 128) return undefined;
+  if (/[\x00-\x1f\x7f]/.test(t)) return undefined;
+  return t;
+}
 
 function transformToNormalizedSSE(
   reader: ReadableStreamDefaultReader<Uint8Array>,
@@ -69,8 +83,9 @@ function transformToNormalizedSSE(
 // ─── /chat/google ─────────────────────────────────────────────────────────────
 
 const handleGoogleChat = httpAction(async (_ctx, request) => {
-  const { message, model = "gemini-2.5-flash", history = [] } =
-    (await request.json()) as NormalizedChatRequest;
+  const req = (await request.json()) as NormalizedChatRequest;
+  const { message, model = "gemini-2.5-flash", history = [] } = req;
+  const userTz = normalizedUserTimeZone(req.userTimeZone);
 
   const historyContents = history.map((m) => ({
     role: m.role === "assistant" ? "model" : "user",
@@ -78,7 +93,7 @@ const handleGoogleChat = httpAction(async (_ctx, request) => {
   }));
 
   const body = JSON.stringify({
-    systemInstruction: { parts: [{ text: buildSystemPrompt() }] },
+    systemInstruction: { parts: [{ text: buildSystemPrompt({ userTimeZone: userTz }) }] },
     contents: [...historyContents, { role: "user", parts: [{ text: message }] }],
     generationConfig: { temperature: 0.7, maxOutputTokens: 1024 },
   });
@@ -111,14 +126,15 @@ const handleGoogleChat = httpAction(async (_ctx, request) => {
 // ─── /chat/anthropic ──────────────────────────────────────────────────────────
 
 const handleAnthropicChat = httpAction(async (_ctx, request) => {
-  const { message, model = "claude-sonnet-4-6", history = [] } =
-    (await request.json()) as NormalizedChatRequest;
+  const req = (await request.json()) as NormalizedChatRequest;
+  const { message, model = "claude-sonnet-4-6", history = [] } = req;
+  const userTz = normalizedUserTimeZone(req.userTimeZone);
 
   const body = JSON.stringify({
     model,
     max_tokens: 1024,
     stream: true,
-    system: buildSystemPrompt(),
+    system: buildSystemPrompt({ userTimeZone: userTz }),
     messages: [
       ...history.map((m) => ({ role: m.role, content: m.content })),
       { role: "user", content: message },
@@ -158,14 +174,15 @@ const handleAnthropicChat = httpAction(async (_ctx, request) => {
 // ─── /chat/openai ─────────────────────────────────────────────────────────────
 
 const handleOpenAIChat = httpAction(async (_ctx, request) => {
-  const { message, model = "gpt-4o", history = [] } =
-    (await request.json()) as NormalizedChatRequest;
+  const req = (await request.json()) as NormalizedChatRequest;
+  const { message, model = "gpt-4o", history = [] } = req;
+  const userTz = normalizedUserTimeZone(req.userTimeZone);
 
   const body = JSON.stringify({
     model,
     stream: true,
     messages: [
-      { role: "system", content: buildSystemPrompt() },
+      { role: "system", content: buildSystemPrompt({ userTimeZone: userTz }) },
       ...history.map((m) => ({ role: m.role, content: m.content })),
       { role: "user", content: message },
     ],
@@ -213,13 +230,20 @@ type AnthropicContentBlock =
   | { type: "text"; text: string }
   | { type: "tool_use"; id: string; name: string; input: Record<string, unknown> };
 
-// NOTE: buildSystemPrompt now returns a *static* prompt by default, so the
-// Anthropic prompt-cache prefix is stable across requests. If you need the
-// current date in-prompt, use the `dynamic` flag — but that disables caching
-// of the system block. Models can usually figure out "now" from context.
-function buildSystemPrompt(opts: { dynamic?: boolean } = {}): string {
+// NOTE: buildSystemPrompt returns a mostly-static prompt. Optional
+// `userTimeZone` is injected from the client so the model can reason about
+// local time; that prefix varies per user. If you need the server UTC clock
+// in-prompt, use the `dynamic` flag — but that disables some caching of the
+// system block.
+function buildSystemPrompt(opts: { dynamic?: boolean; userTimeZone?: string | null } = {}): string {
   const date = opts.dynamic ? `The current date and time is ${new Date().toUTCString()}.\n\n` : "";
-  return `${date}You're talking to someone who's busy and smart and doesn't want to be sold to. You're their sharp friend who happens to be good with their tools — not a feature page, not a help desk, not an AI assistant doing AI assistant things.
+  const tz = opts.userTimeZone?.trim();
+  const tzLine = tz
+    ? `The user's local timezone is ${tz} (IANA). Use it when interpreting "today", "this morning", evening vs afternoon, scheduling, deadlines, and anything that depends on what time it is for them.\n\n`
+    : "";
+  return `${date}${tzLine}You're talking to someone who's busy and smart and doesn't want to be sold to. You're their sharp friend who happens to be good with their tools — not a feature page, not a help desk, not an AI assistant doing AI assistant things.
+
+They are using this app on a Mac (macOS). Default to Mac-specific guidance: menu bar, System Settings, Finder, standard macOS shortcuts, and Mac app names — unless they clearly say they're on something else.
 
 # How you talk
 Like a person. Contractions. Short sentences when short sentences work. Longer when the thought needs room. You crack jokes when something is genuinely funny, not because the script says "be funny here." Dry asides land better than try-hard ones. You read the room — if they're frustrated, drop the bit. If they're casual, ride it. Spanish, English, Spanglish, all fine, follow their lead.
@@ -235,7 +259,7 @@ You can poke around in their email, calendar, Stripe, etc. When you're about to 
 If they ask what you can do, don't list tools. Say something like "depends — what's bugging you?" or "honestly easier if you just tell me what you need." Then react to what they actually want.
 
 # Pointing at things on their screen
-You also have a tool called \`take_screenshot\`. Call it whenever the user asks for help finding, opening, navigating, or activating something on THEIR computer's UI — "how do I turn on dark mode," "where's the share button," "open System Settings privacy," "find the bookmark menu," etc. The app will capture their screen, locate the element you describe, and fly a small blue arrow to it. Before calling, drop one short natural sentence like "lemme show you" or "one sec, pointing it out" — never name the tool. Pass a tight, specific \`description\` of what to point at (e.g. "the Apple menu in the top-left", "the Dark Mode toggle in System Settings → Appearance"). After the tool returns, briefly say what they should click or do next. Don't use this for things that aren't a UI element on screen.
+You also have a tool called \`take_screenshot\`. Call it whenever the user asks for help finding, opening, navigating, or activating something on THEIR computer's UI — "how do I turn on dark mode," "where's the share button," "open System Settings privacy," "find the bookmark menu," etc. The app will capture their screen, locate the element you describe, and fly a small on-screen pointer to it. Before calling, drop one short natural sentence like "lemme show you" or "one sec, pointing it out" — never name the tool. Pass a tight, specific \`description\` of what to point at (e.g. "the Apple menu in the top-left", "the Dark Mode toggle in System Settings → Appearance"). After the tool returns, briefly say what they should click or do next. Don't use this for things that aren't a UI element on screen.
 
 # Substance
 Lead with the answer. Reasoning after, if it's useful. If they're wrong, tell them, kindly. If you're not sure, say so — pretending to know is worse than admitting a gap. Be brief by default; expand when the topic earns it. Markdown formatting (headers, bullet lists, bold) is for documents, not conversations — avoid it unless the user is clearly asking for a structured output.`;
@@ -460,10 +484,11 @@ async function runGeminiTurnStreaming(
   contents: GeminiContent[],
   toolsPayload: unknown[] | null,
   controller: ReadableStreamDefaultController<Uint8Array>,
-  encoder: TextEncoder
+  encoder: TextEncoder,
+  userTimeZone?: string
 ): Promise<{ functionCallsRaw: Record<string, unknown>[] }> {
   const body: Record<string, unknown> = {
-    systemInstruction: { parts: [{ text: buildSystemPrompt() }] },
+    systemInstruction: { parts: [{ text: buildSystemPrompt({ userTimeZone }) }] },
     contents,
     generationConfig: { temperature: 0.7, maxOutputTokens: 4096 },
   };
@@ -541,12 +566,14 @@ async function runGeminiTurnStreaming(
 }
 
 const handleGoogleMCPChat = httpAction(async (_ctx, request) => {
+  const req = (await request.json()) as MCPChatRequest;
   const {
     message,
     model = "gemini-2.5-flash",
     history = [],
     entityId = "default",
-  } = (await request.json()) as MCPChatRequest;
+  } = req;
+  const userTz = normalizedUserTimeZone(req.userTimeZone);
 
   const encoder = new TextEncoder();
 
@@ -573,7 +600,8 @@ const handleGoogleMCPChat = httpAction(async (_ctx, request) => {
             contents,
             geminiTools.length > 0 ? geminiTools : null,
             controller,
-            encoder
+            encoder,
+            userTz
           );
 
           if (functionCallsRaw.length === 0) break;
@@ -819,12 +847,14 @@ async function runOpenAITurnStreaming(
 }
 
 const handleAnthropicMCPChat = httpAction(async (_ctx, request) => {
+  const req = (await request.json()) as MCPChatRequest;
   const {
     message,
     model = "claude-sonnet-4-6",
     history = [],
     entityId = "default",
-  } = (await request.json()) as MCPChatRequest;
+  } = req;
+  const userTz = normalizedUserTimeZone(req.userTimeZone);
 
   const encoder = new TextEncoder();
 
@@ -870,7 +900,7 @@ const handleAnthropicMCPChat = httpAction(async (_ctx, request) => {
         const systemBlocks = [
           {
             type: "text" as const,
-            text: buildSystemPrompt(),
+            text: buildSystemPrompt({ userTimeZone: userTz }),
             cache_control: { type: "ephemeral" as const },
           },
         ];
@@ -967,12 +997,14 @@ type OpenAIMessage =
   | { role: "tool"; tool_call_id: string; content: string };
 
 const handleOpenAIToolsChat = httpAction(async (_ctx, request) => {
+  const req = (await request.json()) as MCPChatRequest;
   const {
     message,
     model = "gpt-4o",
     history = [],
     entityId = "default",
-  } = (await request.json()) as MCPChatRequest;
+  } = req;
+  const userTz = normalizedUserTimeZone(req.userTimeZone);
 
   const encoder = new TextEncoder();
 
@@ -1005,7 +1037,7 @@ const handleOpenAIToolsChat = httpAction(async (_ctx, request) => {
         console.log(`[/chat/openai-tools] ${openaiTools.length} tools:`, openaiTools.map((t) => t.function.name));
 
         const messages: OpenAIMessage[] = [
-          { role: "system", content: buildSystemPrompt() },
+          { role: "system", content: buildSystemPrompt({ userTimeZone: userTz }) },
           ...history.map((m) => ({ role: m.role as "user" | "assistant", content: m.content, tool_calls: undefined })),
           { role: "user", content: message },
         ];
