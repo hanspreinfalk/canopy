@@ -52,8 +52,14 @@ export default defineSchema({
         // Rolling summary
         summary: v.optional(v.string()),
         summaryUpdatedAt: v.optional(v.number()),
+        embeddingSummary: v.optional(v.array(v.float64())),
     })
     .index("by_user_id", ["userId"])
+    .vectorIndex("by_embedding_summary", {
+      vectorField: "embeddingSummary",
+      dimensions: 1536,
+      filterFields: ["userId"],
+    })
     ,
     // ─────────────────────────────────────────────────────────────
     // MESSAGES
@@ -76,6 +82,7 @@ export default defineSchema({
         // Embedding
         embedding: v.optional(v.array(v.float64()))
     })
+    .index("by_user_id", ["userId"])
     .index("by_conversation_id", ["conversationId"])
     .vectorIndex("by_embedding", {
         vectorField: "embedding",

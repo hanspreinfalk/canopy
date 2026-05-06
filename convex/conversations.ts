@@ -115,6 +115,18 @@ export const saveMessage = mutation({
             );
         }
 
+        if (args.content.trim().length > 0) {
+            await ctx.scheduler.runAfter(
+                0,
+                internal.messageEmbeddings.embedAndStoreMessageEmbedding,
+                {
+                    messageId,
+                    text: args.content,
+                    createdAtMs: now,
+                }
+            );
+        }
+
         return null;
     },
 });

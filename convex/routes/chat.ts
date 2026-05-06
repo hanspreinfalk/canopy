@@ -1,5 +1,6 @@
 import { httpRouter } from "convex/server";
 import { httpAction } from "../_generated/server";
+import { internal } from "../_generated/api";
 
 type HttpRouter = ReturnType<typeof httpRouter>;
 
@@ -256,6 +257,8 @@ You don't say "Great question!" You don't say "I'd be happy to help!" You don't 
 # Tools
 You can poke around in their email, calendar, Stripe, etc. When you're about to use one, say what you're doing in a quick natural sentence — "lemme peek at your calendar," "checking your inbox," "one sec, pulling up your last invoice" — then do it. Don't say the tool name, just say what you're doing. After it comes back, give them the answer.
 
+You also have an internal memory retrieval tool called \`search_chat_memory\`. It's for RAG over this app's prior chat messages only (their earlier user/assistant turns). It is NOT an email or internet search tool. Use it whenever the user asks to recall earlier context from this chat history.
+
 If they ask what you can do, don't list tools. Say something like "depends — what's bugging you?" or "honestly easier if you just tell me what you need." Then react to what they actually want.
 
 # Pointing at things on their screen
@@ -273,6 +276,8 @@ Lead with the answer. Reasoning after, if it's useful. If they're wrong, tell th
 // keeps progressing.
 
 const TAKE_SCREENSHOT_NAME = "take_screenshot";
+const SEARCH_CHAT_MEMORY_NAME = "search_chat_memory";
+const SEARCH_MESSAGES_LEGACY_ALIAS = "search_messages";
 
 const TAKE_SCREENSHOT_DESCRIPTION =
   "Capture the user's current screen and visually point them to a specific UI element with a small flying blue arrow. " +
@@ -293,6 +298,27 @@ const TAKE_SCREENSHOT_INPUT_SCHEMA = {
   required: ["description"],
 } as const;
 
+const SEARCH_CHAT_MEMORY_DESCRIPTION =
+  "Internal RAG memory retrieval over the user's saved app chat messages (user + assistant turns). " +
+  "This does NOT search Gmail, Calendar, Stripe, or any external account. " +
+  "Use it for memory/continuity questions such as 'what did I say before', 'recall prior context', or finding earlier chat details. " +
+  "Input `query` is a natural-language memory query and `limit` controls matches to return.";
+
+const SEARCH_CHAT_MEMORY_INPUT_SCHEMA = {
+  type: "object",
+  properties: {
+    query: {
+      type: "string",
+      description: "Natural-language search query describing what historical messages to retrieve.",
+    },
+    limit: {
+      type: "number",
+      description: "Optional number of matches to return (1-20).",
+    },
+  },
+  required: ["query"],
+} as const;
+
 // Synthetic tool result we return to the model after a take_screenshot call.
 // The actual screenshot capture + element location happens on the client,
 // out of band; the model doesn't need the result in its conversation context,
@@ -303,12 +329,84 @@ const TAKE_SCREENSHOT_TOOL_RESULT = JSON.stringify({
 });
 
 function isBuiltInToolName(name: string): boolean {
-  return name === TAKE_SCREENSHOT_NAME;
+  return (
+    name === TAKE_SCREENSHOT_NAME ||
+    name === SEARCH_CHAT_MEMORY_NAME ||
+    name === SEARCH_MESSAGES_LEGACY_ALIAS
+  );
 }
 
-function executeBuiltInTool(name: string, _input: Record<string, unknown>): unknown {
+async function executeSearchMessagesTool(
+  ctx: {
+    runAction: (
+      ref: typeof internal.messageEmbeddings.embedText,
+      args: { text: string }
+    ) => Promise<number[]>;
+    runQuery: (
+      ref: typeof internal.messageRag.searchMessagesByEmbedding,
+      args: {
+        clerkUserId: string;
+        queryEmbedding: number[];
+        limit?: number;
+      }
+    ) => Promise<unknown>;
+  },
+  input: Record<string, unknown>,
+  entityId: string
+): Promise<unknown> {
+  const query = typeof input.query === "string" ? input.query.trim() : "";
+  if (!query) return { error: "search_chat_memory requires a non-empty `query`." };
+  if (!entityId || entityId === "default") {
+    return { error: "search_chat_memory requires a real `entityId` for user scoping." };
+  }
+  const rawLimit = input.limit;
+  const limit =
+    typeof rawLimit === "number" && Number.isFinite(rawLimit)
+      ? Math.min(Math.max(1, Math.floor(rawLimit)), 20)
+      : undefined;
+
+  const queryEmbedding = await ctx.runAction(internal.messageEmbeddings.embedText, {
+    text: query,
+  });
+  const resultsUnknown = await ctx.runQuery(internal.messageRag.searchMessagesByEmbedding, {
+    clerkUserId: entityId,
+    queryEmbedding,
+    ...(limit !== undefined ? { limit } : {}),
+  });
+  const results = Array.isArray(resultsUnknown) ? resultsUnknown : [];
+
+  return {
+    tool: SEARCH_CHAT_MEMORY_NAME,
+    query,
+    total: results.length,
+    results,
+  };
+}
+
+async function executeBuiltInTool(
+  ctx: {
+    runAction: (
+      ref: typeof internal.messageEmbeddings.embedText,
+      args: { text: string }
+    ) => Promise<number[]>;
+    runQuery: (
+      ref: typeof internal.messageRag.searchMessagesByEmbedding,
+      args: {
+        clerkUserId: string;
+        queryEmbedding: number[];
+        limit?: number;
+      }
+    ) => Promise<unknown>;
+  },
+  name: string,
+  input: Record<string, unknown>,
+  entityId: string
+): Promise<unknown> {
   if (name === TAKE_SCREENSHOT_NAME) {
     return JSON.parse(TAKE_SCREENSHOT_TOOL_RESULT);
+  }
+  if (name === SEARCH_CHAT_MEMORY_NAME || name === SEARCH_MESSAGES_LEGACY_ALIAS) {
+    return await executeSearchMessagesTool(ctx, input, entityId);
   }
   return { error: `Unknown built-in tool: ${name}` };
 }
@@ -465,6 +563,11 @@ function buildGeminiTools(rawTools: ComposioTool[]): unknown[] {
       description: TAKE_SCREENSHOT_DESCRIPTION,
       parameters: TAKE_SCREENSHOT_INPUT_SCHEMA as unknown as Record<string, unknown>,
     },
+    {
+      name: SEARCH_CHAT_MEMORY_NAME,
+      description: SEARCH_CHAT_MEMORY_DESCRIPTION,
+      parameters: SEARCH_CHAT_MEMORY_INPUT_SCHEMA as unknown as Record<string, unknown>,
+    },
   ];
   const composio = rawTools.map((t) => ({
     name: t.slug,
@@ -596,7 +699,7 @@ async function runGeminiTurnStreaming(
   };
 }
 
-const handleGoogleMCPChat = httpAction(async (_ctx, request) => {
+const handleGoogleMCPChat = httpAction(async (ctx, request) => {
   const req = (await request.json()) as MCPChatRequest;
   const {
     message,
@@ -659,7 +762,7 @@ const handleGoogleMCPChat = httpAction(async (_ctx, request) => {
               const args = (fc["args"] ?? fc["arguments"] ?? {}) as Record<string, unknown>;
               let execData: unknown;
               if (isBuiltInToolName(name)) {
-                execData = executeBuiltInTool(name, args);
+                execData = await executeBuiltInTool(ctx, name, args, entityId);
               } else {
                 execData = await executeComposioTool(name, args, entityId).catch((err) => ({
                   error: String(err),
@@ -926,7 +1029,7 @@ async function runOpenAITurnStreaming(
   };
 }
 
-const handleAnthropicMCPChat = httpAction(async (_ctx, request) => {
+const handleAnthropicMCPChat = httpAction(async (ctx, request) => {
   const req = (await request.json()) as MCPChatRequest;
   const {
     message,
@@ -949,6 +1052,11 @@ const handleAnthropicMCPChat = httpAction(async (_ctx, request) => {
             name: TAKE_SCREENSHOT_NAME,
             description: TAKE_SCREENSHOT_DESCRIPTION,
             input_schema: TAKE_SCREENSHOT_INPUT_SCHEMA as unknown as Record<string, unknown>,
+          },
+          {
+            name: SEARCH_CHAT_MEMORY_NAME,
+            description: SEARCH_CHAT_MEMORY_DESCRIPTION,
+            input_schema: SEARCH_CHAT_MEMORY_INPUT_SCHEMA as unknown as Record<string, unknown>,
           },
         ];
 
@@ -1036,7 +1144,12 @@ const handleAnthropicMCPChat = httpAction(async (_ctx, request) => {
             toolUseBlocks.map(async (toolUse) => {
               let execData: unknown;
               if (isBuiltInToolName(toolUse.name)) {
-                execData = executeBuiltInTool(toolUse.name, toolUse.input ?? {});
+                execData = await executeBuiltInTool(
+                  ctx,
+                  toolUse.name,
+                  toolUse.input ?? {},
+                  entityId
+                );
               } else {
                 execData = await executeComposioTool(toolUse.name, toolUse.input, entityId).catch(
                   (err) => ({ error: String(err) })
@@ -1089,7 +1202,7 @@ type OpenAIMessage =
   | { role: "system" | "user" | "assistant"; content: string | null; tool_calls?: OpenAIToolCall[] }
   | { role: "tool"; tool_call_id: string; content: string };
 
-const handleOpenAIToolsChat = httpAction(async (_ctx, request) => {
+const handleOpenAIToolsChat = httpAction(async (ctx, request) => {
   const req = (await request.json()) as MCPChatRequest;
   const {
     message,
@@ -1112,6 +1225,14 @@ const handleOpenAIToolsChat = httpAction(async (_ctx, request) => {
               name: TAKE_SCREENSHOT_NAME,
               description: TAKE_SCREENSHOT_DESCRIPTION,
               parameters: TAKE_SCREENSHOT_INPUT_SCHEMA as unknown as Record<string, unknown>,
+            },
+          },
+          {
+            type: "function" as const,
+            function: {
+              name: SEARCH_CHAT_MEMORY_NAME,
+              description: SEARCH_CHAT_MEMORY_DESCRIPTION,
+              parameters: SEARCH_CHAT_MEMORY_INPUT_SCHEMA as unknown as Record<string, unknown>,
             },
           },
         ];
@@ -1167,7 +1288,7 @@ const handleOpenAIToolsChat = httpAction(async (_ctx, request) => {
               try { args = JSON.parse(tc.function.arguments) as Record<string, unknown>; } catch { /* ignore */ }
               let execData: unknown;
               if (isBuiltInToolName(tc.function.name)) {
-                execData = executeBuiltInTool(tc.function.name, args);
+                execData = await executeBuiltInTool(ctx, tc.function.name, args, entityId);
               } else {
                 execData = await executeComposioTool(tc.function.name, args, entityId).catch(
                   (err) => ({ error: String(err) })
