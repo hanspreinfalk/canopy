@@ -67,9 +67,10 @@ export default defineSchema({
         ),
         parts: v.optional(v.any()),
 
-        // Token + cost accounting
+        // Token + cost accounting (cost = estimated USD from model + token counts)
         tokensIn: v.optional(v.number()),
         tokensOut: v.optional(v.number()),
+        cost: v.optional(v.number()),
         model: v.optional(v.string()),
 
         // Embedding

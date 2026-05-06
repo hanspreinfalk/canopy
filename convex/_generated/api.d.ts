@@ -11,6 +11,7 @@
 import type * as conversationTitleGeneration from "../conversationTitleGeneration.js";
 import type * as conversations from "../conversations.js";
 import type * as http from "../http.js";
+import type * as modelPricing from "../modelPricing.js";
 import type * as routes_chat from "../routes/chat.js";
 import type * as routes_clerk from "../routes/clerk.js";
 import type * as routes_composio from "../routes/composio.js";
@@ -29,6 +30,7 @@ declare const fullApi: ApiFromModules<{
   conversationTitleGeneration: typeof conversationTitleGeneration;
   conversations: typeof conversations;
   http: typeof http;
+  modelPricing: typeof modelPricing;
   "routes/chat": typeof routes_chat;
   "routes/clerk": typeof routes_clerk;
   "routes/composio": typeof routes_composio;

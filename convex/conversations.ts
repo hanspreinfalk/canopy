@@ -8,6 +8,7 @@ import {
 } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { Id } from "./_generated/dataModel";
+import { estimateMessageCostUsd } from "./modelPricing";
 
 async function getUserMutation(ctx: MutationCtx) {
   const identity = await ctx.auth.getUserIdentity();
@@ -73,6 +74,20 @@ export const saveMessage = mutation({
             now
         );
 
+        const modelTrimmed =
+            args.model !== undefined ? args.model.trim() : "";
+        const hasUsage =
+            args.tokensIn !== undefined &&
+            args.tokensOut !== undefined &&
+            modelTrimmed.length > 0;
+        const cost = hasUsage
+            ? estimateMessageCostUsd(
+                  modelTrimmed,
+                  args.tokensIn!,
+                  args.tokensOut!
+              )
+            : undefined;
+
         const messageId = await ctx.db.insert("messages", {
             userId: user._id,
             conversationId,
@@ -80,9 +95,8 @@ export const saveMessage = mutation({
             parts: [{ type: "text", text: args.content }],
             ...(args.tokensIn !== undefined ? { tokensIn: args.tokensIn } : {}),
             ...(args.tokensOut !== undefined ? { tokensOut: args.tokensOut } : {}),
-            ...(args.model !== undefined && args.model.length > 0
-                ? { model: args.model }
-                : {}),
+            ...(cost !== undefined ? { cost } : {}),
+            ...(modelTrimmed.length > 0 ? { model: modelTrimmed } : {}),
         });
 
         const conv = await ctx.db.get(conversationId);
