@@ -19,7 +19,9 @@
   },
   "homepage": "https://github.com/hanspreinfalk/canopy#readme",
   "dependencies": {
+    "@ai-sdk/google": "^3.0.67",
     "@clerk/backend": "^2.33.3",
+    "ai": "^6.0.175",
     "convex": "^1.37.0",
     "typescript": "^6.0.3"
   },

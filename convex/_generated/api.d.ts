@@ -8,6 +8,7 @@
  * @module
  */
 
+import type * as conversationTitleGeneration from "../conversationTitleGeneration.js";
 import type * as conversations from "../conversations.js";
 import type * as http from "../http.js";
 import type * as routes_chat from "../routes/chat.js";
@@ -25,6 +26,7 @@ import type {
 } from "convex/server";
 
 declare const fullApi: ApiFromModules<{
+  conversationTitleGeneration: typeof conversationTitleGeneration;
   conversations: typeof conversations;
   http: typeof http;
   "routes/chat": typeof routes_chat;

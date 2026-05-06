@@ -19,8 +19,14 @@ struct ConvexConversation: Decodable, Identifiable, Equatable {
 
     var lastMessageDate: Date { Date(timeIntervalSince1970: lastMessageAt / 1000) }
 
-    var displayTitle: String {
-        if let title, !title.isEmpty { return title }
+    /// Persisted title from Convex when non-empty after trimming; otherwise `nil`.
+    var storedTitle: String? {
+        let t = title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return t.isEmpty ? nil : t
+    }
+
+    /// Label used when `storedTitle` is missing (date / time based).
+    var dateBasedLabel: String {
         let cal = Calendar.current
         if cal.isDateInToday(lastMessageDate) {
             return "Today · " + lastMessageDate.formatted(date: .omitted, time: .shortened)
@@ -31,12 +37,15 @@ struct ConvexConversation: Decodable, Identifiable, Equatable {
         }
     }
 
+    var displayTitle: String {
+        storedTitle ?? dateBasedLabel
+    }
+
     var messageCountInt: Int { Int(messageCount) }
 
     /// Starting text when renaming (custom title if set, otherwise the generated display title).
     var renameEditingInitial: String {
-        if let title, !title.isEmpty { return title }
-        return displayTitle
+        storedTitle ?? dateBasedLabel
     }
 }
 

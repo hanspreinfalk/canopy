@@ -537,7 +537,7 @@ struct MainView: View {
     private var chatPanelTitle: String {
         if let selId = vm.selectedConversationId,
            let conv = vm.conversations.first(where: { $0.id == selId }) {
-            return conv.displayTitle
+            return conv.storedTitle ?? conv.dateBasedLabel
         }
         return "Canopy"
     }

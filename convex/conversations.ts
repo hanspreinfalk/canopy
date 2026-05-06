@@ -2,9 +2,11 @@ import { v } from "convex/values";
 import {
   mutation,
   query,
+  internalMutation,
   MutationCtx,
   QueryCtx,
 } from "./_generated/server";
+import { internal } from "./_generated/api";
 import { Id } from "./_generated/dataModel";
 
 async function getUserMutation(ctx: MutationCtx) {
@@ -24,7 +26,7 @@ async function getOrCreateConversation(
     ctx: MutationCtx,
     userId: Id<"users">,
     now: number
-): Promise<Id<"conversations">> {
+): Promise<{ conversationId: Id<"conversations">; isNew: boolean }> {
     const last = await ctx.db
         .query("conversations")
         .withIndex("by_user_id", (q) => q.eq("userId", userId))
@@ -32,14 +34,15 @@ async function getOrCreateConversation(
         .first();
 
     if (last !== null && now - last.lastMessageAt < INACTIVITY_MS) {
-        return last._id;
+        return { conversationId: last._id, isNew: false };
     }
 
-    return await ctx.db.insert("conversations", {
+    const conversationId = await ctx.db.insert("conversations", {
         userId,
         lastMessageAt: now,
         messageCount: 0,
     });
+    return { conversationId, isNew: true };
 }
 
 export const saveMessage = mutation({
@@ -61,7 +64,11 @@ export const saveMessage = mutation({
         if (!user) throw new Error("User not found");
 
         const now = Date.now();
-        const conversationId = await getOrCreateConversation(ctx, user._id, now);
+        const { conversationId, isNew } = await getOrCreateConversation(
+            ctx,
+            user._id,
+            now
+        );
 
         const messageId = await ctx.db.insert("messages", {
             userId: user._id,
@@ -78,7 +85,32 @@ export const saveMessage = mutation({
             });
         }
 
+        if (isNew && args.role === "user") {
+            await ctx.scheduler.runAfter(
+                0,
+                internal.conversationTitleGeneration.generateTitleForConversation,
+                { conversationId, seedText: args.content }
+            );
+        }
+
         return null;
+    },
+});
+
+export const applyGeneratedTitle = internalMutation({
+    args: {
+        conversationId: v.id("conversations"),
+        title: v.string(),
+    },
+    handler: async (ctx, args) => {
+        const conversation = await ctx.db.get(args.conversationId);
+        if (!conversation) return;
+        const existing = conversation.title?.trim() ?? "";
+        if (existing.length > 0) return;
+        const next = args.title.trim();
+        await ctx.db.patch(args.conversationId, {
+            title: next.length > 0 ? next : "New chat",
+        });
     },
 });
 
