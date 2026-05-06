@@ -31,8 +31,8 @@ function formatAuthConfigCreateError(parsed: {
     err?.code === 306
   ) {
     return (
-      "This connector doesn’t support Composio’s built-in sign-in. " +
-      "In the Composio dashboard, create an auth config for this toolkit with your own OAuth app (custom credentials), then try again or pick another connector."
+      "This toolkit doesn’t use Composio’s default managed auth (often API key or custom OAuth). " +
+      "In the Composio dashboard, create an auth configuration for this toolkit (API key, bearer token, or OAuth with your own app), then try again."
     );
   }
   if (err?.message) {
@@ -50,6 +50,59 @@ type ToolkitsPage = {
   next_cursor?: string | null;
   nextCursor?: string | null;
 };
+
+/** Shape returned by GET /api/v3.1/auth_configs (flat `id`; older clients used nested `auth_config`). */
+type ListedAuthConfig = {
+  id?: string;
+  auth_config?: { id: string };
+  status?: string;
+  is_composio_managed?: boolean;
+};
+
+function authConfigIdFromItem(item: ListedAuthConfig): string | undefined {
+  return item.id ?? item.auth_config?.id;
+}
+
+/** Prefer dashboard (custom) configs over Composio-managed when both exist. */
+function pickAuthConfigId(items: ListedAuthConfig[]): string | undefined {
+  if (items.length === 0) return undefined;
+  const usable = items.filter((i) => i.status !== "DISABLED");
+  const pool = usable.length > 0 ? usable : items;
+  const custom = pool.filter((i) => i.is_composio_managed === false);
+  const chosen = custom.length > 0 ? custom[0] : pool[0];
+  return authConfigIdFromItem(chosen);
+}
+
+async function listAuthConfigsForToolkit(toolkitSlug: string): Promise<ListedAuthConfig[]> {
+  const all: ListedAuthConfig[] = [];
+  let cursor: string | undefined;
+  const maxPages = 100;
+
+  for (let page = 0; page < maxPages; page++) {
+    const url = new URL(`${BASE}/api/v3.1/auth_configs`);
+    url.searchParams.set("toolkit_slug", toolkitSlug);
+    url.searchParams.set("limit", "100");
+    if (cursor) url.searchParams.set("cursor", cursor);
+
+    const response = await fetch(url.toString(), { headers: apiHeaders() });
+    if (!response.ok) {
+      const text = await response.text();
+      console.error(`[composio/auth_configs] ${response.status}:`, text.slice(0, 400));
+      break;
+    }
+    const data = (await response.json()) as {
+      items?: ListedAuthConfig[];
+      next_cursor?: string | null;
+    };
+    if (Array.isArray(data.items)) {
+      all.push(...data.items);
+    }
+    const next = data.next_cursor ?? undefined;
+    if (!next || next === cursor) break;
+    cursor = next;
+  }
+  return all;
+}
 
 // GET /composio/apps — list available toolkits (apps)
 const handleGetApps = httpAction(async (_ctx, _request) => {
@@ -117,23 +170,33 @@ const handleGetConnections = httpAction(async (_ctx, request) => {
 });
 
 // POST /composio/connect
-// Flow: find-or-create a Composio-managed auth_config for the toolkit,
-//       then POST /connected_accounts/link → returns { redirect_url }
+// Flow: resolve auth_config (optional explicit id, list from Composio — correct `toolkit_slug` filter),
+//       optionally create Composio-managed auth if nothing exists,
+//       then POST /connected_accounts/link → { redirect_url } (with optional connection_data for API keys).
 const handleConnect = httpAction(async (_ctx, request) => {
-  const body = (await request.json()) as { userId: string; toolkitSlug: string };
-  const { userId, toolkitSlug } = body;
+  const body = (await request.json()) as {
+    userId: string;
+    toolkitSlug: string;
+    /** Use this auth config id when the client or ops pins a dashboard config. */
+    authConfigId?: string;
+    /** Passed through to Composio link (e.g. api_key, bearer_token, subdomain). */
+    connectionData?: Record<string, unknown>;
+  };
+  const { userId, toolkitSlug, connectionData } = body;
+  let authConfigId =
+    typeof body.authConfigId === "string" && body.authConfigId.trim()
+      ? body.authConfigId.trim()
+      : undefined;
 
-  // 1. Look for an existing auth config for this toolkit
-  let authConfigId: string | undefined;
-  const listResp = await fetch(
-    `${BASE}/api/v3.1/auth_configs?toolkit_slugs=${encodeURIComponent(toolkitSlug)}&limit=1`,
-    { headers: apiHeaders() }
-  );
-  if (listResp.ok) {
-    const listData = (await listResp.json()) as {
-      items?: Array<{ auth_config: { id: string } }>;
-    };
-    authConfigId = listData.items?.[0]?.auth_config?.id;
+  // 1. List existing auth configs (GET uses `toolkit_slug`, not `toolkit_slugs`; items use top-level `id`).
+  if (!authConfigId) {
+    const listed = await listAuthConfigsForToolkit(toolkitSlug);
+    authConfigId = pickAuthConfigId(listed);
+    if (listed.length > 0 && !authConfigId) {
+      console.warn(
+        `[composio/connect] ${listed.length} auth_config(s) for ${toolkitSlug} but none had a usable id`
+      );
+    }
   }
 
   // 2. If none exists, create a Composio-managed auth config (documented body shape).
@@ -176,11 +239,19 @@ const handleConnect = httpAction(async (_ctx, request) => {
     }
   }
 
-  // 3. Create the OAuth link
-  const linkResp = await fetch(`${BASE}/api/v3/connected_accounts/link`, {
+  // 3. Auth link session (OAuth redirect or hosted/API-key flow). Use v3.1 per API docs.
+  const linkBody: Record<string, unknown> = {
+    auth_config_id: authConfigId,
+    user_id: userId,
+  };
+  if (connectionData && Object.keys(connectionData).length > 0) {
+    linkBody.connection_data = connectionData;
+  }
+
+  const linkResp = await fetch(`${BASE}/api/v3.1/connected_accounts/link`, {
     method: "POST",
     headers: apiHeaders(),
-    body: JSON.stringify({ auth_config_id: authConfigId, user_id: userId }),
+    body: JSON.stringify(linkBody),
   });
   const linkRaw = await linkResp.text();
   console.log(`[composio/connect] ${toolkitSlug} → ${linkResp.status}:`, linkRaw.slice(0, 500));
