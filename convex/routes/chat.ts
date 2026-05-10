@@ -647,6 +647,233 @@ async function executeComposioTool(
   return resp.ok ? resp.json() : { error: `HTTP ${resp.status}` };
 }
 
+/** Bound client-supplied history so prior turns (esp. huge tool JSON) cannot blow provider limits. */
+const MAX_MCP_HISTORY_MESSAGES = 40;
+const MAX_HISTORY_MESSAGE_CHARS = 16_000;
+
+function trimHistoryForMCP(history: HistoryMessage[]): HistoryMessage[] {
+  const sliced =
+    history.length > MAX_MCP_HISTORY_MESSAGES
+      ? history.slice(-MAX_MCP_HISTORY_MESSAGES)
+      : history;
+  return sliced.map((m) => {
+    if (m.content.length <= MAX_HISTORY_MESSAGE_CHARS) return m;
+    return {
+      role: m.role,
+      content:
+        m.content.slice(0, MAX_HISTORY_MESSAGE_CHARS) +
+        `\n\n...[truncated history message, ${m.content.length} chars total]`,
+    };
+  });
+}
+
+/** Keep tool_result / function responses under provider context limits. */
+const MAX_TOOL_RESULT_JSON_CHARS = 28_000;
+const MAX_GMAIL_LIST_ITEMS = 10;
+const MAX_GMAIL_BODY_CHARS = 2_500;
+const GENERIC_STRING_CAP = 4_000;
+
+/**
+ * Composio exposes ~94 tools with very large JSON Schemas.
+ * Anthropic counts the full tool list JSON toward the 200k-token context limit.
+ *
+ * Strategy (three passes, stop at first that fits):
+ *   Pass 1 – slim:  strip schema description/title/examples, cap desc to 500 chars.
+ *   Pass 2 – shell: keep only property names+types (no nested metadata), cap desc to 300 chars.
+ *   Pass 3 – bare:  empty schema `{type:"object",properties:{}}` for all, desc 200 chars.
+ *
+ * The budget is conservative; Anthropic allows 200k tokens and we need ~120k for
+ * system + history + messages + tool results, leaving ~80k chars (~20k tokens) for tools.
+ */
+const MAX_TOOLS_TOTAL_JSON_CHARS = 320_000; // ~80k tokens; enforced per-pass
+
+function capDesc(s: string, max: number): string {
+  if (typeof s !== "string") return "";
+  return s.length <= max ? s : s.slice(0, max) + "…";
+}
+
+function keepOnlyTypesAndRequired(node: unknown, depth: number): unknown {
+  if (depth <= 0) return {};
+  if (Array.isArray(node)) return node.map((x) => keepOnlyTypesAndRequired(x, depth - 1));
+  if (node && typeof node === "object") {
+    const o = node as Record<string, unknown>;
+    const next: Record<string, unknown> = {};
+    const allowed = new Set(["type", "required", "properties", "items", "enum", "anyOf", "oneOf", "allOf"]);
+    for (const [k, v] of Object.entries(o)) {
+      if (allowed.has(k)) next[k] = keepOnlyTypesAndRequired(v, depth - 1);
+    }
+    return next;
+  }
+  return node;
+}
+
+function stripSchemaMetadata(node: unknown, depth: number): unknown {
+  if (depth <= 0) return node;
+  if (Array.isArray(node)) return node.map((x) => stripSchemaMetadata(x, depth - 1));
+  if (node && typeof node === "object") {
+    const o = node as Record<string, unknown>;
+    const next: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(o)) {
+      if (k === "description" || k === "title" || k === "examples" || k === "default") continue;
+      next[k] = stripSchemaMetadata(v, depth - 1);
+    }
+    return next;
+  }
+  return node;
+}
+
+const EMPTY_SCHEMA: Record<string, unknown> = { type: "object", properties: {} };
+
+function buildComposioAnthropicTools(rawTools: ComposioTool[]): Array<Record<string, unknown>> {
+  const buildPass = (
+    descMax: number,
+    schemaTx: (raw: Record<string, unknown>) => Record<string, unknown>,
+  ): Array<Record<string, unknown>> =>
+    rawTools.map((t) => {
+      const raw = (t.input_parameters ?? t.input_schema ?? t.parameters ?? EMPTY_SCHEMA) as Record<string, unknown>;
+      return {
+        name: t.slug,
+        description: capDesc(typeof t.description === "string" ? t.description : "", descMax),
+        input_schema: schemaTx(raw),
+      };
+    });
+
+  for (const [descMax, schemaTx] of [
+    [500, (r: Record<string, unknown>) => stripSchemaMetadata(r, 30) as Record<string, unknown>],
+    [300, (r: Record<string, unknown>) => keepOnlyTypesAndRequired(r, 20) as Record<string, unknown>],
+    [200, (_r: Record<string, unknown>) => ({ ...EMPTY_SCHEMA })],
+  ] as Array<[number, (r: Record<string, unknown>) => Record<string, unknown>]>) {
+    const tools = buildPass(descMax, schemaTx);
+    const totalChars = JSON.stringify(tools).length;
+    console.log(`[composio-tools] pass descMax=${descMax} → ${tools.length} tools, ${totalChars} chars`);
+    if (totalChars <= MAX_TOOLS_TOTAL_JSON_CHARS) return tools;
+  }
+
+  // Absolute last resort: names + trimmed descriptions only.
+  return rawTools.map((t) => ({
+    name: t.slug,
+    description: capDesc(typeof t.description === "string" ? t.description : "", 120),
+    input_schema: { ...EMPTY_SCHEMA },
+  }));
+}
+
+function truncateGmailMessageRecord(msg: Record<string, unknown>): Record<string, unknown> {
+  const out = { ...msg };
+  const bodyKeys = ["messageText", "body", "html", "text", "snippet", "plainText", "messageBody"];
+  for (const key of bodyKeys) {
+    const v = out[key];
+    if (typeof v === "string" && v.length > MAX_GMAIL_BODY_CHARS) {
+      out[key] =
+        v.slice(0, MAX_GMAIL_BODY_CHARS) +
+        `\n…[truncated ${key}, ${v.length} chars total]`;
+    }
+  }
+  return out;
+}
+
+function sanitizeGmailLikeToolPayload(data: unknown): unknown {
+  if (!data || typeof data !== "object") return data;
+  const root = data as Record<string, unknown>;
+  const out: Record<string, unknown> = { ...root };
+
+  const shrinkMessagesArray = (arr: unknown[], pathLabel: string) => {
+    const slice = arr.slice(0, MAX_GMAIL_LIST_ITEMS).map((m) => {
+      if (m && typeof m === "object") return truncateGmailMessageRecord(m as Record<string, unknown>);
+      return m;
+    });
+    const omitted = arr.length - slice.length;
+    if (omitted > 0) {
+      return {
+        messages: slice,
+        _truncatedMessages: true,
+        _omittedMessageCount: omitted,
+        _path: pathLabel,
+      };
+    }
+    return { messages: slice };
+  };
+
+  if (out.data && typeof out.data === "object") {
+    const d = out.data as Record<string, unknown>;
+    const dOut: Record<string, unknown> = { ...d };
+    if (Array.isArray(d.messages)) {
+      const shrunk = shrinkMessagesArray(d.messages, "data.messages");
+      dOut.messages = shrunk.messages;
+      if ("_truncatedMessages" in shrunk) {
+        dOut._truncatedMessages = shrunk._truncatedMessages;
+        dOut._omittedMessageCount = shrunk._omittedMessageCount;
+        dOut._truncatedPath = shrunk._path;
+      }
+    }
+    out.data = dOut;
+  }
+
+  if (Array.isArray(out.messages)) {
+    const shrunk = shrinkMessagesArray(out.messages, "messages");
+    out.messages = shrunk.messages;
+    if ("_truncatedMessages" in shrunk) {
+      out._truncatedMessages = shrunk._truncatedMessages;
+      out._omittedMessageCount = shrunk._omittedMessageCount;
+      out._truncatedPath = shrunk._path;
+    }
+  }
+
+  return out;
+}
+
+function deepTruncateStrings(value: unknown, maxLen: number, depth: number): unknown {
+  if (depth <= 0) return value;
+  if (typeof value === "string") {
+    if (value.length <= maxLen) return value;
+    return value.slice(0, maxLen) + `\n…[truncated string, ${value.length} chars total]`;
+  }
+  if (Array.isArray(value)) {
+    return value.map((x) => deepTruncateStrings(x, maxLen, depth - 1));
+  }
+  if (value && typeof value === "object") {
+    const o = value as Record<string, unknown>;
+    const next: Record<string, unknown> = {};
+    for (const k of Object.keys(o)) {
+      next[k] = deepTruncateStrings(o[k], maxLen, depth - 1);
+    }
+    return next;
+  }
+  return value;
+}
+
+/**
+ * Shrinks tool execution results before they are JSON-stringified into the next model prompt.
+ * Composio integrations (e.g. Gmail fetch) can return hundreds of KB and exceed Anthropic's 200k cap.
+ */
+function sanitizeToolResultForModel(toolName: string, execData: unknown): unknown {
+  if (execData && typeof execData === "object" && "error" in execData) {
+    return execData;
+  }
+
+  const upper = toolName.toUpperCase();
+  let shaped = execData;
+  if (upper.startsWith("GMAIL_")) {
+    shaped = sanitizeGmailLikeToolPayload(shaped);
+  }
+
+  shaped = deepTruncateStrings(shaped, GENERIC_STRING_CAP, 12);
+
+  let serialized = JSON.stringify(shaped);
+  if (serialized.length <= MAX_TOOL_RESULT_JSON_CHARS) return shaped;
+
+  shaped = deepTruncateStrings(shaped, Math.floor(GENERIC_STRING_CAP / 2), 8);
+  serialized = JSON.stringify(shaped);
+  if (serialized.length <= MAX_TOOL_RESULT_JSON_CHARS) return shaped;
+
+  return {
+    _truncated: true,
+    _reason: "tool_result_exceeded_size_limit",
+    toolName,
+    approxSerializedChars: serialized.length,
+    preview: serialized.slice(0, 12_000),
+  };
+}
+
 // ─── SSE event helpers ────────────────────────────────────────────────────────
 //
 // In addition to the existing `{text: "..."}` chunks, we now emit
@@ -877,8 +1104,9 @@ const handleGoogleMCPChat = httpAction(async (ctx, request) => {
           `[/chat/google-mcp] Composio tools: ${rawTools.length}, past summaries: ${pastSummaries.length}`,
         );
 
+        const trimmedHistory = trimHistoryForMCP(history);
         const contents: GeminiContent[] = [
-          ...history.map((m) => ({
+          ...trimmedHistory.map((m) => ({
             role: m.role === "assistant" ? "model" : "user",
             parts: [{ text: m.content }],
           })),
@@ -932,8 +1160,9 @@ const handleGoogleMCPChat = httpAction(async (ctx, request) => {
               emitEvent(controller, encoder, {
                 tool_end: { name, id: (fc["id"] as string) ?? null, ok },
               });
-              console.log(`[/chat/google-mcp] executed ${name}:`, JSON.stringify(execData).slice(0, 200));
-              return execData;
+              const sanitized = sanitizeToolResultForModel(name, execData);
+              console.log(`[/chat/google-mcp] executed ${name}:`, JSON.stringify(sanitized).slice(0, 200));
+              return sanitized;
             })
           );
 
@@ -1233,14 +1462,7 @@ const handleAnthropicMCPChat = httpAction(async (ctx, request) => {
           },
         ];
 
-        const composioAnthropicTools: Array<Record<string, unknown>> = rawTools.map((t) => ({
-          name: t.slug,
-          description: t.description ?? "",
-          input_schema: (t.input_parameters ?? t.input_schema ?? t.parameters ?? {
-            type: "object",
-            properties: {},
-          }) as Record<string, unknown>,
-        }));
+        const composioAnthropicTools = buildComposioAnthropicTools(rawTools);
 
         const anthropicTools: Array<Record<string, unknown>> = [
           ...builtInAnthropicTools,
@@ -1253,7 +1475,11 @@ const handleAnthropicMCPChat = httpAction(async (ctx, request) => {
         if (anthropicTools.length > 0) {
           anthropicTools[anthropicTools.length - 1].cache_control = { type: "ephemeral" };
         }
-        console.log(`[/chat/anthropic-mcp] ${anthropicTools.length} tools:`, anthropicTools.map((t) => t.name));
+        const toolListChars = JSON.stringify(anthropicTools).length;
+        console.log(
+          `[/chat/anthropic-mcp] ${anthropicTools.length} tools, ~${toolListChars} chars (~${Math.round(toolListChars / 4)} est. tokens):`,
+          anthropicTools.map((t) => t.name),
+        );
 
         // System prompt as an array so we can attach cache_control. This
         // caches the system block separately (and the tools block builds on
@@ -1270,8 +1496,9 @@ const handleAnthropicMCPChat = httpAction(async (ctx, request) => {
         ];
 
         type ConvMessage = { role: string; content: unknown };
+        const trimmedHistory = trimHistoryForMCP(history);
         const messages: ConvMessage[] = [
-          ...history.map((m) => ({ role: m.role as string, content: m.content as unknown })),
+          ...trimmedHistory.map((m) => ({ role: m.role as string, content: m.content as unknown })),
           { role: "user", content: message },
         ];
 
@@ -1335,8 +1562,16 @@ const handleAnthropicMCPChat = httpAction(async (ctx, request) => {
               emitEvent(controller, encoder, {
                 tool_end: { name: toolUse.name, id: toolUse.id, ok },
               });
-              console.log(`[/chat/anthropic-mcp] executed ${toolUse.name}:`, JSON.stringify(execData).slice(0, 200));
-              return { type: "tool_result" as const, tool_use_id: toolUse.id, content: JSON.stringify(execData) };
+              const sanitized = sanitizeToolResultForModel(toolUse.name, execData);
+              console.log(
+                `[/chat/anthropic-mcp] executed ${toolUse.name}:`,
+                JSON.stringify(sanitized).slice(0, 200),
+              );
+              return {
+                type: "tool_result" as const,
+                tool_use_id: toolUse.id,
+                content: JSON.stringify(sanitized),
+              };
             })
           );
 
@@ -1448,6 +1683,7 @@ const handleOpenAIToolsChat = httpAction(async (ctx, request) => {
           openaiTools.map((t) => t.function.name),
         );
 
+        const trimmedHistory = trimHistoryForMCP(history);
         const messages: OpenAIMessage[] = [
           {
             role: "system",
@@ -1456,7 +1692,11 @@ const handleOpenAIToolsChat = httpAction(async (ctx, request) => {
               pastConversationSummaries: pastSummaries,
             }),
           },
-          ...history.map((m) => ({ role: m.role as "user" | "assistant", content: m.content, tool_calls: undefined })),
+          ...trimmedHistory.map((m) => ({
+            role: m.role as "user" | "assistant",
+            content: m.content,
+            tool_calls: undefined,
+          })),
           { role: "user", content: message },
         ];
 
@@ -1502,8 +1742,16 @@ const handleOpenAIToolsChat = httpAction(async (ctx, request) => {
               emitEvent(controller, encoder, {
                 tool_end: { name: tc.function.name, id: tc.id, ok },
               });
-              console.log(`[/chat/openai-tools] executed ${tc.function.name}:`, JSON.stringify(execData).slice(0, 200));
-              return { role: "tool" as const, tool_call_id: tc.id, content: JSON.stringify(execData) };
+              const sanitized = sanitizeToolResultForModel(tc.function.name, execData);
+              console.log(
+                `[/chat/openai-tools] executed ${tc.function.name}:`,
+                JSON.stringify(sanitized).slice(0, 200),
+              );
+              return {
+                role: "tool" as const,
+                tool_call_id: tc.id,
+                content: JSON.stringify(sanitized),
+              };
             })
           );
 
